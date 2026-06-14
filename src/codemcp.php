@@ -127,12 +127,12 @@ final class codemcp
         return [
             'codex' => [
                 'provider' => 'codex',
-                'command' => 'codex mcp-server',
+                'command' => $this->commandPath('codex') . ' mcp-server',
                 'mode' => 'mcp-agent'
             ],
             'claude' => [
                 'provider' => 'claude',
-                'command' => 'claude -p',
+                'command' => $this->commandPath('claude') . ' -p',
                 'mode' => 'cli-agent'
             ]
         ];
@@ -160,7 +160,7 @@ final class codemcp
     {
         $thread_id = $this->createUuid();
         $result = $this->runCommand([
-            'claude',
+            $this->commandPath('claude'),
             '-p',
             '--output-format',
             'json',
@@ -177,7 +177,7 @@ final class codemcp
     private function continueClaude(string $thread_id, string $prompt): array
     {
         $result = $this->runCommand([
-            'claude',
+            $this->commandPath('claude'),
             '--resume',
             $thread_id,
             '-p',
@@ -198,7 +198,7 @@ final class codemcp
 
     private function callCodexTool(string $tool, array $arguments, ?string $workdir): array
     {
-        $client = $this->startStdioMcp(command: 'codex', args: ['mcp-server'], workdir: $workdir);
+        $client = $this->startStdioMcp(command: $this->commandPath('codex'), args: ['mcp-server'], workdir: $workdir);
         try {
             $this->mcpRequest($client, 'initialize', [
                 'protocolVersion' => '2024-11-05',
@@ -584,6 +584,39 @@ final class codemcp
     private function processEnv(): array
     {
         $env = getenv();
-        return is_array($env) ? $env : $_ENV;
+        $env = is_array($env) ? $env : $_ENV;
+        $env['PATH'] = implode(':', array_merge(
+            $this->localBinDirectories(),
+            $this->nodeBinDirectories(),
+            [($env['PATH'] ?? '')]
+        ));
+        return $env;
+    }
+
+    private function commandPath(string $command): string
+    {
+        foreach ($this->localBinDirectories() as $directory) {
+            $path = $directory . '/' . $command;
+            if (is_file($path) && is_executable($path)) {
+                return $path;
+            }
+        }
+        return $command;
+    }
+
+    private function localBinDirectories(): array
+    {
+        $cwd = getcwd();
+        return array_values(array_unique(array_filter([
+            is_string($cwd) ? $cwd . '/node_modules/.bin' : null,
+            dirname(__DIR__) . '/node_modules/.bin',
+            dirname(__DIR__, 4) . '/node_modules/.bin',
+            '/mcp/coding/node_modules/.bin'
+        ])));
+    }
+
+    private function nodeBinDirectories(): array
+    {
+        return array_values(array_filter(glob('/root/.nvm/versions/node/*/bin') ?: [], 'is_dir'));
     }
 }
