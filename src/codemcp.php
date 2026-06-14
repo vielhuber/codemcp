@@ -159,7 +159,6 @@ final class codemcp
     private function startClaude(string $prompt, string $workdir): array
     {
         $thread_id = $this->createUuid();
-        $permission_mode = $this->config['allow_write'] === true ? 'acceptEdits' : 'plan';
         $result = $this->runCommand([
             'claude',
             '-p',
@@ -168,7 +167,7 @@ final class codemcp
             '--session-id',
             $thread_id,
             '--permission-mode',
-            $permission_mode,
+            $this->claudePermissionMode(),
             $prompt
         ], $workdir);
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
@@ -185,11 +184,16 @@ final class codemcp
             '--output-format',
             'json',
             '--permission-mode',
-            'acceptEdits',
+            $this->claudePermissionMode(),
             $prompt
         ], null);
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
         return $result;
+    }
+
+    private function claudePermissionMode(): string
+    {
+        return $this->config['allow_write'] === true ? 'acceptEdits' : 'plan';
     }
 
     private function callCodexTool(string $tool, array $arguments, ?string $workdir): array
