@@ -587,7 +587,6 @@ final class codemcp
         $env = is_array($env) ? $env : $_ENV;
         $env['PATH'] = implode(':', array_merge(
             $this->localBinDirectories(),
-            $this->nodeBinDirectories(),
             [($env['PATH'] ?? '')]
         ));
         return $env;
@@ -613,10 +612,5 @@ final class codemcp
             dirname(__DIR__, 4) . '/node_modules/.bin',
             '/mcp/coding/node_modules/.bin'
         ])));
-    }
-
-    private function nodeBinDirectories(): array
-    {
-        return array_values(array_filter(glob('/root/.nvm/versions/node/*/bin') ?: [], 'is_dir'));
     }
 }
