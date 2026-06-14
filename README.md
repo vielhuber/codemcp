@@ -41,7 +41,7 @@ MCP_TOKEN=
 
 Claude Code also has `claude mcp serve`, but that exposes Claude Code's tools to another MCP client. For running Claude Code as the coding agent, codemcp uses print/resume mode.
 
-When `codex` or `claude` are installed locally in `node_modules/.bin`, codemcp uses those local binaries before falling back to global commands.
+codemcp expects `codex` and `claude` in the local `node_modules/.bin` directory of the project where the MCP server is started.
 
 ## usage
 
