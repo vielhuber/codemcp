@@ -1,4 +1,3 @@
-[![build status](https://github.com/vielhuber/codemcp/actions/workflows/ci.yml/badge.svg)](https://github.com/vielhuber/codemcp/actions)
 [![GitHub Tag](https://img.shields.io/github/v/tag/vielhuber/codemcp)](https://github.com/vielhuber/codemcp/tags)
 [![Code Style](https://img.shields.io/badge/code_style-psr--12-ff69b4.svg)](https://www.php-fig.org/psr/psr-12/)
 [![License](https://img.shields.io/github/license/vielhuber/codemcp)](https://github.com/vielhuber/codemcp/blob/main/LICENSE.md)
@@ -6,11 +5,9 @@
 [![PHP Version Support](https://img.shields.io/packagist/php-v/vielhuber/codemcp)](https://packagist.org/packages/vielhuber/codemcp)
 [![Packagist Downloads](https://img.shields.io/packagist/dt/vielhuber/codemcp)](https://packagist.org/packages/vielhuber/codemcp)
 
-# 🤖 codemcp 🤖
+# 📟 codemcp 📟
 
-codemcp is a small PHP MCP server that exposes agentic coding through Codex and Claude Code.
-
-It does not reimplement a coding agent. It forwards normalized MCP tools to the closest official agent interface:
+codemcp is a small mcp server that exposes agentic coding through codex and claude code. it does not reimplement a coding agent, it forwards normalized MCP tools to the closest official agent interface:
 
 - **Codex** via `codex mcp-server`
 - **Claude Code** via `claude -p` / `claude --resume`
