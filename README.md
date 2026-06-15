@@ -34,7 +34,6 @@ codemcp reads configuration from the `.env` in your project root.
 ```dotenv
 CODEMCP_PROVIDER=codex
 CODEMCP_WORKDIR=/app
-CODEMCP_ALLOW_WRITE=false
 
 MCP_TOKEN=
 ```
@@ -71,10 +70,6 @@ available tools:
 - `continue(session_id, prompt)`
 - `status(session_id?)`
 - `providers()`
-
-## write access
-
-Set `CODEMCP_ALLOW_WRITE=true` when the agent may edit files. Otherwise Codex runs read-only and Claude Code runs in plan mode.
 
 ## tests
 

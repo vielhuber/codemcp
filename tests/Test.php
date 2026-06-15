@@ -50,7 +50,6 @@ final class Test extends \PHPUnit\Framework\TestCase
         return [
             'provider' => 'codex',
             'workdir' => $this->directory,
-            'allow_write' => false,
             'timeout' => 1,
             'session_dir' => $this->directory . '/sessions'
         ];

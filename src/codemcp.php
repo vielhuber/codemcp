@@ -115,7 +115,6 @@ final class codemcp
             'config' => [
                 'provider' => $this->config['provider'],
                 'workdir' => $this->config['workdir'],
-                'allow_write' => $this->config['allow_write'],
                 'timeout' => $this->config['timeout']
             ],
             'sessions' => $this->sessionStatus($session_id)
@@ -143,7 +142,7 @@ final class codemcp
         return $this->callCodexTool('codex', [
             'prompt' => $prompt,
             'cwd' => $workdir,
-            'sandbox' => $this->config['allow_write'] === true ? 'workspace-write' : 'read-only',
+            'sandbox' => 'danger-full-access',
             'approval-policy' => 'never'
         ], $workdir);
     }
@@ -167,7 +166,7 @@ final class codemcp
             '--session-id',
             $thread_id,
             '--permission-mode',
-            $this->claudePermissionMode(),
+            'acceptEdits',
             $prompt
         ], $workdir);
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
@@ -184,16 +183,11 @@ final class codemcp
             '--output-format',
             'json',
             '--permission-mode',
-            $this->claudePermissionMode(),
+            'acceptEdits',
             $prompt
         ], null);
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
         return $result;
-    }
-
-    private function claudePermissionMode(): string
-    {
-        return $this->config['allow_write'] === true ? 'acceptEdits' : 'plan';
     }
 
     private function callCodexTool(string $tool, array $arguments, ?string $workdir): array
@@ -462,7 +456,6 @@ final class codemcp
         return [
             'provider' => strtolower($this->env('CODEMCP_PROVIDER', 'codex')),
             'workdir' => $this->env('CODEMCP_WORKDIR', getcwd() ?: dirname(__DIR__)),
-            'allow_write' => $this->boolEnv('CODEMCP_ALLOW_WRITE', false),
             'timeout' => max(1, (int) $this->env('CODEMCP_TIMEOUT', '1800')),
             'session_dir' => $this->absolutePath($this->env('CODEMCP_SESSION_DIR', '.codemcp/sessions'))
         ];
@@ -501,15 +494,6 @@ final class codemcp
     {
         $value = getenv($key);
         return $value === false ? $default : (string) $value;
-    }
-
-    private function boolEnv(string $key, bool $default): bool
-    {
-        $value = getenv($key);
-        if ($value === false) {
-            return $default;
-        }
-        return in_array(strtolower((string) $value), ['1', 'true', 'yes', 'on'], true);
     }
 
     private function absolutePath(string $path): string
