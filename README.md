@@ -34,9 +34,13 @@ codemcp reads configuration from the `.env` in your project root.
 ```dotenv
 CODEMCP_PROVIDER=codex
 CODEMCP_WORKDIR=/app
+CODEMCP_MODEL=
+CODEMCP_EFFORT=
 
 MCP_TOKEN=
 ```
+
+`CODEMCP_MODEL` and `CODEMCP_EFFORT` are optional defaults; both can be overridden per call via the `model` and `effort` arguments of `start`.
 
 Claude Code also has `claude mcp serve`, but that exposes Claude Code's tools to another MCP client. For running Claude Code as the coding agent, codemcp uses print/resume mode.
 
@@ -50,11 +54,24 @@ $code = codemcp::create();
 $result = $code->start(
     prompt: 'Review this project and list the highest-risk bugs.',
     workdir: '/app',
-    provider: 'codex'
+    provider: 'codex',
+    model: 'gpt-5.2-codex',
+    effort: 'high'
 );
 
 print_r($result);
 ```
+
+## model & effort
+
+`start` accepts optional `model` and `effort` (`minimal` | `low` | `medium` | `high`) arguments. codemcp forwards them to the native lever of each agent:
+
+| provider | model | effort |
+| --- | --- | --- |
+| codex | `model` argument of the `codex` MCP tool (e.g. `gpt-5.2-codex`) | config override `model_reasoning_effort` |
+| claude | `--model` CLI flag (e.g. `claude-opus-4-8`, `sonnet`) | thinking budget via `MAX_THINKING_TOKENS` env (minimal=1024, low=4096, medium=10240, high=31999) |
+
+both settings are stored in the session: `continue` re-applies them for claude; codex threads retain the model/effort they were started with (`codex-reply` accepts no overrides).
 
 ## mcp server
 
@@ -66,7 +83,7 @@ vendor/bin/mcp-server.php
 
 available tools:
 
-- `start(prompt, workdir?, provider?)`
+- `start(prompt, workdir?, provider?, model?, effort?)`
 - `continue(session_id, prompt)`
 - `status(session_id?)`
 - `providers()`

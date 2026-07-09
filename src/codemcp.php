@@ -21,31 +21,83 @@ final class codemcp
         return new self(config: $config);
     }
 
+    /**
+     * Start a new agentic coding session. Runs the FULL native harness of the
+     * chosen agent (Codex CLI via `codex mcp-server`, or Claude Code via
+     * `claude -p`) inside the given working directory: the agent autonomously
+     * reads and edits files, runs shell commands and tests, and works the task
+     * end-to-end with its complete built-in toolset. This call BLOCKS until
+     * the agent has finished — complex tasks can take several minutes.
+     *
+     * The agent has write access inside the working directory. For pure
+     * analysis/review, state "do not change any files" explicitly in the
+     * prompt.
+     *
+     * Returns `session_id` (use with `continue` for follow-ups that need the
+     * same agent context), `provider`, `workdir`, `model`, `effort`,
+     * `thread_id` and `content` (the agent's final answer).
+     *
+     * @param string $prompt Complete, self-contained task description. The agent knows NOTHING about this conversation — include the concrete goal, target paths/files, constraints (e.g. "analysis only, do not change files"), and the command(s) to verify success (e.g. "run vendor/bin/phpunit and make it pass").
+     * @param string|null $workdir Absolute path the agent works in. Must exist. Omit to use the configured default.
+     * @param string|null $provider Coding agent: "codex" (Codex CLI) or "claude" (Claude Code). Omit to use the configured default.
+     * @param string|null $model Provider-native model name — codex e.g. "gpt-5.2-codex", claude e.g. "claude-opus-4-8" or "sonnet". Omit to use the agent's own default.
+     * @param string|null $effort Reasoning effort: "minimal", "low", "medium" or "high". Maps to the reasoning-effort config on codex and to the thinking-token budget on claude. Higher = more thorough but slower. Omit for the agent's default.
+     */
     #[McpTool(name: 'start')]
-    public function startTool(string $prompt, ?string $workdir = null, ?string $provider = null): array
+    public function startTool(string $prompt, ?string $workdir = null, ?string $provider = null, ?string $model = null, ?string $effort = null): array
     {
-        return $this->start(prompt: $prompt, workdir: $workdir, provider: $provider);
+        return $this->start(prompt: $prompt, workdir: $workdir, provider: $provider, model: $model, effort: $effort);
     }
 
+    /**
+     * Continue an existing coding session with full context preservation: the
+     * agent resumes its native thread (codex `codex-reply`, claude
+     * `claude --resume`) and still knows everything from the previous turns —
+     * files it read, changes it made, decisions it took. Model and effort of
+     * the session are kept. Use this ONLY for follow-ups that belong to the
+     * same task (fix review findings, adjust the previous change, run the
+     * tests again); start a fresh session for unrelated tasks. Blocks until
+     * the agent has finished, like `start`.
+     *
+     * @param string $session_id The `session_id` returned by a previous `start` call (also listed by `status`).
+     * @param string $prompt Follow-up instruction for the same task. May reference prior context ("now also fix the failing test you mentioned").
+     */
     #[McpTool(name: 'continue')]
     public function continueTool(string $session_id, string $prompt): array
     {
         return $this->continue(session_id: $session_id, prompt: $prompt);
     }
 
+    /**
+     * Show the active configuration (default provider, workdir, model, effort,
+     * timeout) and stored sessions. Without `session_id`, lists all known
+     * sessions newest first (id, provider, workdir, model, effort, thread id,
+     * last answer); with `session_id`, returns just that session. Use this to
+     * find a resumable session or to check which defaults apply before calling
+     * `start`.
+     *
+     * @param string|null $session_id Session id to inspect. Omit to list all sessions.
+     */
     #[McpTool(name: 'status')]
     public function statusTool(?string $session_id = null): array
     {
         return $this->status(session_id: $session_id);
     }
 
+    /**
+     * List the available coding agents ("codex" and "claude") with the exact
+     * command each one is launched with and its integration mode (codex:
+     * mcp-agent via `codex mcp-server`; claude: cli-agent via `claude -p`).
+     * Purely informational — helps to choose the `provider` argument for
+     * `start`.
+     */
     #[McpTool(name: 'providers')]
     public function providersTool(): array
     {
         return $this->providers();
     }
 
-    public function start(string $prompt, ?string $workdir = null, ?string $provider = null): array
+    public function start(string $prompt, ?string $workdir = null, ?string $provider = null, ?string $model = null, ?string $effort = null): array
     {
         $prompt = trim($prompt);
         if ($prompt === '') {
@@ -54,15 +106,19 @@ final class codemcp
 
         $provider_name = $this->normalizeProvider($provider);
         $workdir = $this->resolveWorkdir($workdir);
+        $model = $this->normalizeModel($model);
+        $effort = $this->normalizeEffort($effort);
 
         $result = match ($provider_name) {
-            'codex' => $this->startCodex(prompt: $prompt, workdir: $workdir),
-            'claude' => $this->startClaude(prompt: $prompt, workdir: $workdir),
+            'codex' => $this->startCodex(prompt: $prompt, workdir: $workdir, model: $model, effort: $effort),
+            'claude' => $this->startClaude(prompt: $prompt, workdir: $workdir, model: $model, effort: $effort),
             default => throw new RuntimeException('codemcp: unsupported provider: ' . $provider_name)
         };
         $session = $this->saveSession([
             'provider' => $provider_name,
             'workdir' => $workdir,
+            'model' => $model,
+            'effort' => $effort,
             'thread_id' => $result['thread_id'] ?? null,
             'last_content' => $result['content'] ?? null
         ]);
@@ -71,6 +127,8 @@ final class codemcp
             'session_id' => $session['id'],
             'provider' => $provider_name,
             'workdir' => $workdir,
+            'model' => $model,
+            'effort' => $effort,
             'thread_id' => $session['thread_id'],
             'content' => $result['content'] ?? null,
             'raw' => $result['raw'] ?? $result
@@ -91,9 +149,12 @@ final class codemcp
         }
 
         $provider_name = (string) $session['provider'];
+        $model = $this->normalizeModel(isset($session['model']) ? (string) $session['model'] : null);
+        $effort = $this->normalizeEffort(isset($session['effort']) ? (string) $session['effort'] : null);
         $result = match ($provider_name) {
+            // codex threads retain model/effort from start; codex-reply accepts no overrides
             'codex' => $this->continueCodex(thread_id: $thread_id, prompt: $prompt),
-            'claude' => $this->continueClaude(thread_id: $thread_id, prompt: $prompt),
+            'claude' => $this->continueClaude(thread_id: $thread_id, prompt: $prompt, model: $model, effort: $effort),
             default => throw new RuntimeException('codemcp: unsupported provider: ' . $provider_name)
         };
         $session['thread_id'] = $result['thread_id'] ?? $thread_id;
@@ -115,6 +176,8 @@ final class codemcp
             'config' => [
                 'provider' => $this->config['provider'],
                 'workdir' => $this->config['workdir'],
+                'model' => ($this->config['model'] ?? '') === '' ? null : $this->config['model'],
+                'effort' => ($this->config['effort'] ?? '') === '' ? null : $this->config['effort'],
                 'timeout' => $this->config['timeout']
             ],
             'sessions' => $this->sessionStatus($session_id)
@@ -137,14 +200,21 @@ final class codemcp
         ];
     }
 
-    private function startCodex(string $prompt, string $workdir): array
+    private function startCodex(string $prompt, string $workdir, ?string $model = null, ?string $effort = null): array
     {
-        return $this->callCodexTool('codex', [
+        $arguments = [
             'prompt' => $prompt,
             'cwd' => $workdir,
             'sandbox' => 'danger-full-access',
             'approval-policy' => 'never'
-        ], $workdir);
+        ];
+        if ($model !== null) {
+            $arguments['model'] = $model;
+        }
+        if ($effort !== null) {
+            $arguments['config'] = ['model_reasoning_effort' => $effort];
+        }
+        return $this->callCodexTool('codex', $arguments, $workdir);
     }
 
     private function continueCodex(string $thread_id, string $prompt): array
@@ -155,10 +225,10 @@ final class codemcp
         ], null);
     }
 
-    private function startClaude(string $prompt, string $workdir): array
+    private function startClaude(string $prompt, string $workdir, ?string $model = null, ?string $effort = null): array
     {
         $thread_id = $this->createUuid();
-        $result = $this->runInteractiveCommand([
+        $command = [
             $this->agentBinary('claude'),
             '-p',
             '--output-format',
@@ -166,16 +236,21 @@ final class codemcp
             '--session-id',
             $thread_id,
             '--permission-mode',
-            'acceptEdits',
-            $prompt
-        ], $workdir);
+            'acceptEdits'
+        ];
+        if ($model !== null) {
+            $command[] = '--model';
+            $command[] = $model;
+        }
+        $command[] = $prompt;
+        $result = $this->runInteractiveCommand($command, $workdir, $this->claudeEnv($effort));
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
         return $result;
     }
 
-    private function continueClaude(string $thread_id, string $prompt): array
+    private function continueClaude(string $thread_id, string $prompt, ?string $model = null, ?string $effort = null): array
     {
-        $result = $this->runInteractiveCommand([
+        $command = [
             $this->agentBinary('claude'),
             '--resume',
             $thread_id,
@@ -183,11 +258,34 @@ final class codemcp
             '--output-format',
             'json',
             '--permission-mode',
-            'acceptEdits',
-            $prompt
-        ], null);
+            'acceptEdits'
+        ];
+        if ($model !== null) {
+            $command[] = '--model';
+            $command[] = $model;
+        }
+        $command[] = $prompt;
+        $result = $this->runInteractiveCommand($command, null, $this->claudeEnv($effort));
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
         return $result;
+    }
+
+    /**
+     * Claude Code has no effort flag — the equivalent lever is the thinking
+     * token budget via the MAX_THINKING_TOKENS environment variable.
+     */
+    private function claudeEnv(?string $effort): array
+    {
+        if ($effort === null) {
+            return [];
+        }
+        $budgets = [
+            'minimal' => 1024,
+            'low' => 4096,
+            'medium' => 10240,
+            'high' => 31999
+        ];
+        return ['MAX_THINKING_TOKENS' => (string) $budgets[$effort]];
     }
 
     private function callCodexTool(string $tool, array $arguments, ?string $workdir): array
@@ -313,7 +411,7 @@ final class codemcp
         }
     }
 
-    private function runCommand(array $command, ?string $workdir): array
+    private function runCommand(array $command, ?string $workdir, array $extra_env = []): array
     {
         $process = proc_open(
             $command,
@@ -324,7 +422,7 @@ final class codemcp
             ],
             $pipes,
             $workdir,
-            $this->processEnv()
+            $this->processEnv($extra_env)
         );
         if (!is_resource($process)) {
             throw new RuntimeException('codemcp: failed to start command: ' . implode(' ', $command));
@@ -361,13 +459,13 @@ final class codemcp
         throw new RuntimeException('codemcp: command timed out after ' . $this->config['timeout'] . ' seconds.');
     }
 
-    private function runInteractiveCommand(array $command, ?string $workdir): array
+    private function runInteractiveCommand(array $command, ?string $workdir, array $extra_env = []): array
     {
         $script = implode(' ', array_map('escapeshellarg', $command));
         if ($workdir !== null) {
             $script = 'cd ' . escapeshellarg($workdir) . ' && ' . $script;
         }
-        return $this->runCommand(['bash', '-ic', $script], null);
+        return $this->runCommand(['bash', '-ic', $script], null, $extra_env);
     }
 
     private function normalizeMcpResult(array $result, string $tool): array
@@ -439,6 +537,24 @@ final class codemcp
         return $provider;
     }
 
+    private function normalizeModel(?string $model): ?string
+    {
+        $model = trim($model ?: ($this->config['model'] ?? ''));
+        return $model === '' ? null : $model;
+    }
+
+    private function normalizeEffort(?string $effort): ?string
+    {
+        $effort = strtolower(trim($effort ?: ($this->config['effort'] ?? '')));
+        if ($effort === '') {
+            return null;
+        }
+        if (!in_array($effort, ['minimal', 'low', 'medium', 'high'], true)) {
+            throw new RuntimeException('codemcp: unsupported effort (use minimal|low|medium|high): ' . $effort);
+        }
+        return $effort;
+    }
+
     private function resolveWorkdir(?string $workdir): string
     {
         $workdir = rtrim(trim($workdir ?: $this->config['workdir']), '/');
@@ -456,6 +572,8 @@ final class codemcp
         return [
             'provider' => strtolower($this->env('CODEMCP_PROVIDER', 'codex')),
             'workdir' => $this->env('CODEMCP_WORKDIR', getcwd() ?: dirname(__DIR__)),
+            'model' => $this->env('CODEMCP_MODEL', ''),
+            'effort' => $this->env('CODEMCP_EFFORT', ''),
             'timeout' => max(1, (int) $this->env('CODEMCP_TIMEOUT', '1800')),
             'session_dir' => $this->absolutePath($this->env('CODEMCP_SESSION_DIR', '.codemcp/sessions'))
         ];
@@ -574,10 +692,10 @@ final class codemcp
         return vsprintf('%s%s-%s-%s-%s-%s%s%s', str_split(bin2hex($data), 4));
     }
 
-    private function processEnv(): array
+    private function processEnv(array $extra = []): array
     {
         $env = getenv();
-        return is_array($env) ? $env : $_ENV;
+        return array_merge(is_array($env) ? $env : $_ENV, $extra);
     }
 
     private function projectDir(): string
