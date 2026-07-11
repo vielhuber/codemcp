@@ -7,15 +7,13 @@
 
 # 📟 codemcp 📟
 
-codemcp exposes agentic coding through the official harnesses of **Codex** (`codex mcp-server` / `codex exec resume`) and **Claude Code** (`claude -p` / `--resume` / `--continue`) as a small mcp server. runs are **asynchronous**: they execute detached, results are collected by polling — safe behind any transport timeout.
+codemcp exposes agentic coding through the official harnesses of **Codex** and **Claude Code** as a small mcp server. runs are **asynchronous**: they execute detached, results are collected by polling — safe behind any transport timeout.
 
 ## installation
 
 ```bash
 composer require vielhuber/codemcp
 ```
-
-codemcp expects `codex` and `claude` in the local `node_modules/.bin` of the project where the server is started.
 
 ## setup
 
@@ -27,7 +25,6 @@ CODEMCP_WORKDIR=/app            # default working directory
 CODEMCP_MODEL=                  # optional default model
 CODEMCP_EFFORT=                 # optional default effort
 CODEMCP_TIMEOUT=1800            # max seconds per agent run
-CODEMCP_SESSION_DIR=.codemcp/sessions
 
 MCP_TOKEN=
 ```
@@ -47,10 +44,10 @@ session fields: `status` (`running` → `completed` | `error` | `stopped`), `las
 
 ## model & effort
 
-| provider | model | effort (`minimal`&#124;`low`&#124;`medium`&#124;`high`&#124;`xhigh`) |
-| --- | --- | --- |
-| codex | `model` argument of the `codex` MCP tool; omit by default unless you know the account supports the requested model | config override `model_reasoning_effort`; `minimal` is ignored because Codex rejects it with the built-in toolset |
-| claude | `--model` CLI flag (e.g. `claude-opus-4-8`, `sonnet`) | native `--effort` flag (`minimal` maps to `low`) |
+| provider | model                                                                                                              | effort (`minimal`&#124;`low`&#124;`medium`&#124;`high`&#124;`xhigh`)                                              |
+| -------- | ------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| codex    | `model` argument of the `codex` MCP tool; omit by default unless you know the account supports the requested model | config override `model_reasoning_effort`; `minimal` is ignored because Codex rejects it with the built-in toolset |
+| claude   | `--model` CLI flag (e.g. `claude-opus-4-8`, `sonnet`)                                                              | native `--effort` flag (`minimal` maps to `low`)                                                                  |
 
 both persist for the whole session; codex threads keep the settings they were started with. claude runs with `--dangerously-skip-permissions` (+ `IS_SANDBOX=1`), codex with `danger-full-access` — intended for externally sandboxed environments.
 
@@ -58,7 +55,13 @@ both persist for the whole session; codex threads keep the settings they were st
 
 ```php
 $code = codemcp::create();
-$session = $code->start(prompt: 'Fix the failing tests.', workdir: '/app', provider: 'claude', model: 'claude-opus-4-8', effort: 'high');
+$session = $code->start(
+    prompt: 'Fix the failing tests.',
+    workdir: '/app',
+    provider: 'claude',
+    model: 'claude-opus-4-8',
+    effort: 'high'
+);
 do {
     $session = $code->wait($session['session_id'], 120);
 } while ($session['status'] === 'running');
