@@ -27,7 +27,9 @@ final class codemcp
      * session of this MCP or a thread started on a console), the NEWEST thread
      * of that folder is CONTINUED with full context; only a folder without any
      * history begins a fresh thread. This mirrors the console habit of
-     * `codex resume --last` / `claude --continue`.
+     * `codex resume --last` / `claude --continue`. If the folder's newest
+     * session is still running, the prompt is QUEUED there and processed in
+     * order (CLI typing parity).
      *
      * The chosen agent (Codex CLI or Claude Code) is spawned DETACHED with its
      * FULL native harness: it autonomously reads and edits files, runs shell
@@ -56,51 +58,49 @@ final class codemcp
     }
 
     /**
-     * Continue a coding session ASYNCHRONOUSLY with full context preservation:
-     * the agent resumes its native thread and still knows everything from the
-     * previous turns — files it read, changes it made, decisions it took.
-     * Model and effort of the session are kept.
+     * Send a follow-up prompt into a session ASYNCHRONOUSLY with full context
+     * preservation: the agent resumes its native thread and still knows
+     * everything from the previous turns — files it read, changes it made,
+     * decisions it took. Model and effort of the session are kept.
      *
-     * Two ways to address the session:
-     * - With `session_id`: continue exactly that session.
-     * - WITHOUT `session_id`: continue the most recent session of the given
-     *   `workdir` — the folder acts as the lookup key, exactly like
-     *   `codex resume --last` / `claude --continue` on the console. This also
-     *   finds threads that were started OUTSIDE this MCP (e.g. interactively
-     *   on a console) by falling back to the agent's native folder history.
+     * CLI parity: prompts can be fired at any time, even while the session is
+     * still running — they are QUEUED and processed strictly in order, exactly
+     * like typing further messages into an interactive claude/codex session.
+     * `wait` returns once the whole queue is drained.
      *
-     * Like `start` this returns immediately with status "running" — poll with
-     * `wait`/`status` for the result. Fails if the addressed session is still
-     * running. Use continue ONLY for follow-ups that belong to the same task;
-     * start a fresh session for unrelated tasks.
+     * Returns immediately — poll with `wait`/`status` for the result. Use
+     * continue ONLY for follow-ups that belong to the same task; start a fresh
+     * session (other folder) for unrelated tasks. To continue the newest
+     * thread of a FOLDER, simply call `start` — it auto-continues folders
+     * that already have history.
      *
+     * @param string $session_id The `session_id` returned by a previous `start` call (also listed by `status`).
      * @param string $prompt Follow-up instruction for the same task. May reference prior context ("now also fix the failing test you mentioned").
-     * @param string|null $session_id The `session_id` returned by a previous `start` call (also listed by `status`). Omit to address the newest session of `workdir` instead.
-     * @param string|null $workdir Only used without `session_id`: the folder whose latest session should be continued. Omit to use the configured default.
-     * @param string|null $provider Only used without `session_id`: restricts folder lookup to one agent and selects the agent for the native-history fallback ("codex" or "claude"). Omit to use the configured default.
      */
     #[McpTool(name: 'continue')]
-    public function continueTool(string $prompt, ?string $session_id = null, ?string $workdir = null, ?string $provider = null): array
+    public function continueTool(string $session_id, string $prompt): array
     {
-        return $this->continue(prompt: $prompt, session_id: $session_id, workdir: $workdir, provider: $provider);
+        return $this->continue(session_id: $session_id, prompt: $prompt);
     }
 
     /**
      * Wait for a running session to finish, up to `timeout_seconds` (1–240,
-     * default 60). Returns the session either way — ALWAYS check its `status`
-     * field: "running" means the agent is still working (simply call `wait`
-     * again; long runs are normal), "completed" means the final answer is in
-     * `last_content`, "error" means the run failed (see `error`), "stopped"
-     * means it was aborted. `log_tail` shows the agent's recent activity.
+     * default 60). A session counts as finished only when its WHOLE prompt
+     * queue is drained. Returns the session either way — ALWAYS check its
+     * `status` field: "running" means the agent is still working (simply call
+     * `wait` again; long runs are normal), "completed" means the final answer
+     * is in `last_content`, "error" means the run failed (see `error`),
+     * "stopped" means it was aborted. `log_tail` shows the agent's recent
+     * activity including the answers to already-processed queued prompts.
      * Prefer this over busy-polling `status` in a loop.
      *
      * @param string $session_id The session to wait for.
-     * @param int $timeout_seconds Maximum seconds to wait in this single call (1–240). If the session is still running afterwards, just call `wait` again.
+     * @param int $timeout Maximum seconds to wait in this single call (1–240). If the session is still running afterwards, just call `wait` again.
      */
     #[McpTool(name: 'wait')]
-    public function waitTool(string $session_id, int $timeout_seconds = 60): array
+    public function waitTool(string $session_id, int $timeout = 60): array
     {
-        return $this->wait(session_id: $session_id, timeout_seconds: $timeout_seconds);
+        return $this->wait(session_id: $session_id, timeout: $timeout);
     }
 
     /**
@@ -171,6 +171,7 @@ final class codemcp
             'effort' => $effort,
             'mode' => 'start',
             'prompt' => $prompt,
+            'queue' => [$prompt],
             'status' => 'running',
             'thread_id' => null,
             'last_content' => null,
@@ -183,55 +184,13 @@ final class codemcp
         return $this->publicSession($session);
     }
 
-    public function continue(string $prompt, ?string $session_id = null, ?string $workdir = null, ?string $provider = null): array
+    public function continue(string $session_id, string $prompt): array
     {
         $prompt = trim($prompt);
         if ($prompt === '') {
             throw new RuntimeException('codemcp: prompt must not be empty.');
         }
-        if ($session_id !== null && trim($session_id) !== '') {
-            return $this->continueSession($session_id, $prompt);
-        }
-
-        // no session id: the folder is the lookup key (console semantics of
-        // `codex resume --last` / `claude --continue`)
-        $workdir = $this->resolveWorkdir($workdir);
-        $provider_name = $provider !== null && trim($provider) !== '' ? $this->normalizeProvider($provider) : null;
-        foreach ($this->sessionStatus()['sessions'] as $candidate) {
-            // list is sorted newest first
-            if (($candidate['workdir'] ?? '') !== $workdir) {
-                continue;
-            }
-            if ($provider_name !== null && ($candidate['provider'] ?? '') !== $provider_name) {
-                continue;
-            }
-            if ((string) ($candidate['thread_id'] ?? '') === '') {
-                continue;
-            }
-            return $this->continueSession((string) $candidate['id'], $prompt);
-        }
-
-        // no own session for this folder — the thread was started outside this
-        // MCP (e.g. on a console). resume the agent's native folder history:
-        // the runner resolves it at execution time (codex: newest rollout with
-        // this cwd; claude: --continue inside the folder).
-        $session = $this->saveSession([
-            'provider' => $provider_name ?? $this->normalizeProvider(null),
-            'workdir' => $workdir,
-            'model' => $this->normalizeModel(null),
-            'effort' => $this->normalizeEffort(null),
-            'mode' => 'continue_last',
-            'prompt' => $prompt,
-            'status' => 'running',
-            'thread_id' => null,
-            'last_content' => null,
-            'error' => null,
-            'pid' => null,
-            'started_at' => date(DATE_ATOM),
-            'finished_at' => null
-        ]);
-        $session = $this->spawnRunner($session);
-        return $this->publicSession($session);
+        return $this->continueSession($session_id, $prompt);
     }
 
     /**
@@ -269,6 +228,7 @@ final class codemcp
             'effort' => $effort,
             'mode' => 'continue_last',
             'prompt' => $prompt,
+            'queue' => [$prompt],
             'status' => 'running',
             'thread_id' => null,
             'last_content' => null,
@@ -283,51 +243,65 @@ final class codemcp
 
     private function continueSession(string $session_id, string $prompt, ?string $model = null, ?string $effort = null): array
     {
-        $session = $this->refreshSession($this->getSession($session_id));
-        if (($session['status'] ?? 'completed') === 'running') {
-            throw new RuntimeException(
-                'codemcp: session is still running — wait for it to finish (or stop it) before continuing.'
-            );
+        $spawn = false;
+        $session = $this->withSessionLock($session_id, function () use ($session_id, $prompt, $model, $effort, &$spawn) {
+            $session = $this->getSession($session_id);
+            $queue = is_array($session['queue'] ?? null) ? $session['queue'] : [];
+            $queue[] = $prompt;
+            $session['queue'] = $queue;
+            if ($model !== null) {
+                $session['model'] = $model;
+            }
+            if ($effort !== null) {
+                $session['effort'] = $effort;
+            }
+            // an actively running runner will pick the queued prompt up on its
+            // own; anything else (finished, errored, stopped, dead runner)
+            // needs a fresh runner to drain the queue
+            $pid = (int) ($session['pid'] ?? 0);
+            $started = strtotime((string) ($session['started_at'] ?? ''));
+            $booting = $pid === 0 && $started !== false && time() - $started < 30;
+            $alive = ($session['status'] ?? '') === 'running' && ($this->processAlive($pid) || $booting);
+            if (!$alive) {
+                $session['status'] = 'running';
+                $session['error'] = null;
+                $session['pid'] = null;
+                $session['started_at'] = date(DATE_ATOM);
+                $session['finished_at'] = null;
+                $spawn = true;
+            }
+            return $this->saveSession($session);
+        });
+        if ($spawn) {
+            $session = $this->spawnRunner($session);
         }
-        $thread_id = (string) ($session['thread_id'] ?? '');
-        if ($thread_id === '') {
-            throw new RuntimeException('codemcp: session has no upstream thread id and cannot be continued.');
-        }
-
-        if ($model !== null) {
-            $session['model'] = $model;
-        }
-        if ($effort !== null) {
-            $session['effort'] = $effort;
-        }
-        $session['mode'] = 'continue';
-        $session['prompt'] = $prompt;
-        $session['status'] = 'running';
-        $session['error'] = null;
-        $session['pid'] = null;
-        $session['started_at'] = date(DATE_ATOM);
-        $session['finished_at'] = null;
-        $session = $this->saveSession($session);
-        $session = $this->spawnRunner($session);
-        return $this->publicSession($session);
+        return $this->publicSession(
+            $session,
+            $spawn
+                ? null
+                : 'prompt queued (position ' .
+                    count($session['queue'] ?? []) .
+                    ') — the running agent processes queued prompts strictly in order; poll with wait(session_id).'
+        );
     }
 
     /**
      * Expose the session under the `session_id` key that `continue`/`wait`/
      * `stop` expect as input, plus a polling hint for tool consumers.
      */
-    private function publicSession(array $session): array
+    private function publicSession(array $session, ?string $hint = null): array
     {
         return array_merge(['session_id' => $session['id']], $session, [
             'hint' =>
+                $hint ??
                 'agent is running detached — poll with wait(session_id) until status is no longer "running"; the final answer will be in last_content.'
         ]);
     }
 
-    public function wait(string $session_id, int $timeout_seconds = 60): array
+    public function wait(string $session_id, int $timeout = 60): array
     {
-        $timeout_seconds = max(1, min(240, $timeout_seconds));
-        $deadline = time() + $timeout_seconds;
+        $timeout = max(1, min(240, $timeout));
+        $deadline = time() + $timeout;
         while (true) {
             $session = $this->refreshSession($this->getSession($session_id));
             if (($session['status'] ?? 'completed') !== 'running' || time() >= $deadline) {
@@ -353,10 +327,15 @@ final class codemcp
             usleep(300000);
             exec('pkill -KILL -s ' . $pid . ' 2>/dev/null');
         }
-        $session['status'] = 'stopped';
-        $session['pid'] = null;
-        $session['finished_at'] = date(DATE_ATOM);
-        $session = $this->saveSession($session);
+        $session = $this->withSessionLock($session_id, function () use ($session_id) {
+            $session = $this->getSession($session_id);
+            $session['status'] = 'stopped';
+            // stop means abort everything, including not-yet-processed prompts
+            $session['queue'] = [];
+            $session['pid'] = null;
+            $session['finished_at'] = date(DATE_ATOM);
+            return $this->saveSession($session);
+        });
         $this->logLine($session, 'session stopped on request');
         return $session;
     }
@@ -398,14 +377,18 @@ final class codemcp
 
     /**
      * Detached-runner entry point (called by runner.php, never by MCP tools):
-     * executes the agent run recorded in the session file synchronously and
-     * writes the outcome back. All state transitions of a run happen here.
+     * drains the session's prompt queue strictly in order — prompts enqueued
+     * while a run is in flight are picked up automatically, exactly like
+     * typing further messages into an interactive CLI session. All state
+     * transitions of a run happen here.
      */
     public function executeJob(string $session_id): void
     {
-        $session = $this->getSession($session_id);
-        $session['pid'] = getmypid();
-        $session = $this->saveSession($session);
+        $session = $this->withSessionLock($session_id, function () use ($session_id) {
+            $session = $this->getSession($session_id);
+            $session['pid'] = getmypid();
+            return $this->saveSession($session);
+        });
         $this->logLine(
             $session,
             'runner started (pid ' .
@@ -418,94 +401,134 @@ final class codemcp
                 ($session['effort'] ?? null ? ', effort ' . $session['effort'] : '') .
                 ')'
         );
-        try {
-            $mode = (string) ($session['mode'] ?? 'start');
-            $provider_name = (string) ($session['provider'] ?? '');
-            $prompt = (string) ($session['prompt'] ?? '');
-            $workdir = (string) ($session['workdir'] ?? '');
-            $model = isset($session['model']) && $session['model'] !== null && $session['model'] !== '' ? (string) $session['model'] : null;
-            $effort = isset($session['effort']) && $session['effort'] !== null && $session['effort'] !== '' ? (string) $session['effort'] : null;
-            $thread_id = (string) ($session['thread_id'] ?? '');
-            $event_log = $this->logPath($session_id);
-
-            $result = match (true) {
-                $mode === 'start' && $provider_name === 'codex' => $this->startCodex(
-                    prompt: $prompt,
-                    workdir: $workdir,
-                    model: $model,
-                    effort: $effort,
-                    event_log: $event_log
-                ),
-                $mode === 'start' && $provider_name === 'claude' => $this->startClaude(
-                    prompt: $prompt,
-                    workdir: $workdir,
-                    model: $model,
-                    effort: $effort
-                ),
-                // codex threads retain model/effort from start; codex-reply accepts no overrides
-                $mode === 'continue' && $provider_name === 'codex' => $this->continueCodex(
-                    thread_id: $thread_id,
-                    prompt: $prompt,
-                    event_log: $event_log
-                ),
-                $mode === 'continue' && $provider_name === 'claude' => $this->continueClaude(
-                    thread_id: $thread_id,
-                    prompt: $prompt,
-                    model: $model,
-                    effort: $effort
-                ),
-                // folder-based resume without a known thread id (console parity)
-                $mode === 'continue_last' && $provider_name === 'codex' => $this->continueCodex(
-                    thread_id: $this->latestCodexThreadFor($workdir),
-                    prompt: $prompt,
-                    event_log: $event_log
-                ),
-                $mode === 'continue_last' && $provider_name === 'claude' => $this->continueLastClaude(
-                    prompt: $prompt,
-                    workdir: $workdir,
-                    model: $model,
-                    effort: $effort
-                ),
-                default => throw new RuntimeException('codemcp: unsupported job: ' . $mode . '/' . $provider_name)
-            };
-
-            // re-read before the final write: stop() may have marked the
-            // session as stopped while the agent was running
-            $fresh = $this->getSession($session_id);
-            if (($fresh['status'] ?? '') === 'stopped') {
+        while (true) {
+            // claim the next queued prompt; an empty queue terminates the run
+            [$session, $prompt] = $this->withSessionLock($session_id, function () use ($session_id) {
+                $session = $this->getSession($session_id);
+                if (($session['status'] ?? '') === 'stopped') {
+                    return [$session, null];
+                }
+                $queue = is_array($session['queue'] ?? null) ? $session['queue'] : [];
+                if ($queue === []) {
+                    $session['status'] = 'completed';
+                    $session['pid'] = null;
+                    $session['finished_at'] = date(DATE_ATOM);
+                    return [$this->saveSession($session), null];
+                }
+                $prompt = (string) array_shift($queue);
+                $session['queue'] = $queue;
+                $session['prompt'] = $prompt;
+                return [$this->saveSession($session), $prompt];
+            });
+            if ($prompt === null) {
+                $this->logLine($session, 'runner finished (' . ($session['status'] ?? '?') . ')');
                 return;
             }
-            $fresh['thread_id'] = $result['thread_id'] ?? ($fresh['thread_id'] ?? null);
-            $fresh['last_content'] = $result['content'] ?? null;
-            $fresh['status'] = 'completed';
-            $fresh['error'] = null;
-            $fresh['pid'] = null;
-            $fresh['finished_at'] = date(DATE_ATOM);
-            $this->saveSession($fresh);
-            $this->logLine($fresh, 'runner finished (completed)');
-        } catch (\Throwable $e) {
-            // top-level boundary of the detached process: record ANY failure in
-            // the session file so pollers see a terminal state instead of a
-            // silently dead runner
-            $fresh = $this->getSession($session_id);
-            if (($fresh['status'] ?? '') === 'stopped') {
+            try {
+                $result = $this->executeQueuedPrompt($session, $prompt);
+            } catch (\Throwable $e) {
+                // top-level boundary of the detached process: record ANY failure
+                // in the session file so pollers see a terminal state instead of
+                // a silently dead runner. remaining queued prompts are kept —
+                // a later continue() respawns a runner that drains them.
+                $this->withSessionLock($session_id, function () use ($session_id, $e) {
+                    $session = $this->getSession($session_id);
+                    if (($session['status'] ?? '') === 'stopped') {
+                        return $session;
+                    }
+                    $session['status'] = 'error';
+                    $session['error'] = $e->getMessage();
+                    $session['pid'] = null;
+                    $session['finished_at'] = date(DATE_ATOM);
+                    return $this->saveSession($session);
+                });
+                $this->logLine($session, 'runner failed: ' . $e->getMessage());
                 return;
             }
-            $fresh['status'] = 'error';
-            $fresh['error'] = $e->getMessage();
-            $fresh['pid'] = null;
-            $fresh['finished_at'] = date(DATE_ATOM);
-            $this->saveSession($fresh);
-            $this->logLine($fresh, 'runner failed: ' . $e->getMessage());
+            $session = $this->withSessionLock($session_id, function () use ($session_id, $result) {
+                $session = $this->getSession($session_id);
+                if (($session['status'] ?? '') === 'stopped') {
+                    return $session;
+                }
+                $session['thread_id'] = $result['thread_id'] ?? ($session['thread_id'] ?? null);
+                $session['last_content'] = $result['content'] ?? null;
+                $session['error'] = null;
+                return $this->saveSession($session);
+            });
+            if (($session['status'] ?? '') === 'stopped') {
+                return;
+            }
+            $this->logLine($session, 'prompt done: ' . mb_substr(trim((string) ($result['content'] ?? '')), 0, 120));
         }
+    }
+
+    /**
+     * Execute one queued prompt: the first prompt of a fresh session starts a
+     * new thread (or resolves the folder's native history), every later prompt
+     * continues the recorded thread.
+     */
+    private function executeQueuedPrompt(array $session, string $prompt): array
+    {
+        $session_id = (string) $session['id'];
+        $mode = (string) ($session['mode'] ?? 'start');
+        $provider_name = (string) ($session['provider'] ?? '');
+        $workdir = (string) ($session['workdir'] ?? '');
+        $model = isset($session['model']) && $session['model'] !== null && $session['model'] !== '' ? (string) $session['model'] : null;
+        $effort = isset($session['effort']) && $session['effort'] !== null && $session['effort'] !== '' ? (string) $session['effort'] : null;
+        $thread_id = (string) ($session['thread_id'] ?? '');
+        $event_log = $this->logPath($session_id);
+
+        return match (true) {
+            $thread_id !== '' && $provider_name === 'codex' => $this->continueCodex(
+                thread_id: $thread_id,
+                prompt: $prompt,
+                event_log: $event_log
+            ),
+            $thread_id !== '' && $provider_name === 'claude' => $this->continueClaude(
+                thread_id: $thread_id,
+                prompt: $prompt,
+                model: $model,
+                effort: $effort
+            ),
+            $mode === 'continue_last' && $provider_name === 'codex' => $this->continueCodex(
+                thread_id: $this->latestCodexThreadFor($workdir),
+                prompt: $prompt,
+                event_log: $event_log
+            ),
+            $mode === 'continue_last' && $provider_name === 'claude' => $this->continueLastClaude(
+                prompt: $prompt,
+                workdir: $workdir,
+                model: $model,
+                effort: $effort
+            ),
+            $provider_name === 'codex' => $this->startCodex(
+                prompt: $prompt,
+                workdir: $workdir,
+                model: $model,
+                effort: $effort,
+                event_log: $event_log
+            ),
+            $provider_name === 'claude' => $this->startClaude(
+                prompt: $prompt,
+                workdir: $workdir,
+                model: $model,
+                effort: $effort
+            ),
+            default => throw new RuntimeException('codemcp: unsupported job: ' . $mode . '/' . $provider_name)
+        };
     }
 
     private function spawnRunner(array $session): array
     {
         $id = (string) $session['id'];
         $log = $this->logPath($id);
-        $session['log_file'] = $log;
-        $session = $this->saveSession($session);
+        // re-read under lock: a concurrently enqueued prompt must not be lost
+        // to a stale overwrite of the session we still hold in memory
+        $session = $this->withSessionLock($id, function () use ($id, $log) {
+            $session = $this->getSession($id);
+            $session['log_file'] = $log;
+            return $this->saveSession($session);
+        });
         // setsid makes the runner a session leader: it survives the MCP request
         // lifecycle and stop() can reap the whole tree via pkill -s
         $command =
@@ -540,10 +563,13 @@ final class codemcp
             ])
         );
         if (!is_resource($process)) {
-            $session['status'] = 'error';
-            $session['error'] = 'failed to spawn detached runner';
-            $session['finished_at'] = date(DATE_ATOM);
-            return $this->saveSession($session);
+            return $this->withSessionLock($id, function () use ($id) {
+                $session = $this->getSession($id);
+                $session['status'] = 'error';
+                $session['error'] = 'failed to spawn detached runner';
+                $session['finished_at'] = date(DATE_ATOM);
+                return $this->saveSession($session);
+            });
         }
         proc_close($process);
         return $session;
@@ -1106,6 +1132,28 @@ final class codemcp
         }
         $cwd = getcwd();
         return rtrim(is_string($cwd) ? $cwd : dirname(__DIR__), '/') . '/' . $path;
+    }
+
+    /**
+     * Serialize read-modify-write cycles on a session file: the MCP process
+     * (enqueueing prompts) and the detached runner (claiming prompts, writing
+     * results) mutate the same session concurrently — without the lock, a
+     * queued prompt could be lost to a stale overwrite.
+     */
+    private function withSessionLock(string $id, callable $fn): mixed
+    {
+        $this->ensureSessionDirectory();
+        $handle = fopen($this->sessionPath($id) . '.lock', 'c');
+        if ($handle === false) {
+            throw new RuntimeException('codemcp: failed to open session lock: ' . $id);
+        }
+        try {
+            flock($handle, LOCK_EX);
+            return $fn();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     private function saveSession(array $session): array

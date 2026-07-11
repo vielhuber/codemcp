@@ -31,8 +31,11 @@ MCP_TOKEN=
 
 ## usage
 
+every function below is also exposed 1:1 as an mcp tool of the same name.
+
 ```php
 $code = codemcp::create();
+
 $session = $code->start(
     prompt: 'Fix the failing tests.',
     workdir: '/app',
@@ -40,27 +43,31 @@ $session = $code->start(
     model: 'claude-opus-4-8',
     effort: 'high'
 );
-do {
-    $session = $code->wait($session['session_id'], 120);
-} while ($session['status'] === 'running');
-echo $session['status'] === 'completed' ? $session['last_content'] : $session['error'];
+
+$session = $code->wait(
+    session_id: $session['session_id'],
+    timeout: 120
+);
+
+$session = $code->status(
+    session_id: $session['session_id']
+);
+$code->status();
+
+$session = $code->continue(
+    session_id: $session['session_id'],
+    prompt: 'Now also fix the linter warnings.'
+);
+
+$session = $code->stop(
+    session_id: $session['session_id']
+);
+
+$providers = $code->providers();
 ```
-
-## mcp
-
-start the mcp server with `vendor/bin/mcp-server.php`. tools:
-
-- `start(prompt, workdir?, provider?, model?, effort?)` — spawn a detached run, returns immediately (`status: running`). **folder continuity**: if the workdir already has history (own session or console thread), the newest thread is continued automatically; only a fresh folder starts a new thread.
-- `wait(session_id, timeout_seconds?)` — block up to 240s until the run finishes, then returns the session. check `status` afterwards; call again while still `running`.
-- `status(session_id?)` — non-blocking snapshot (single session incl. `log_tail`, or all sessions).
-- `continue(prompt, session_id?, workdir?, provider?)` — async follow-up with full context. without `session_id` the newest thread of the folder is continued (console parity with `codex resume --last` / `claude --continue`), including threads started outside this mcp.
-- `stop(session_id)` — abort a running session (kills the whole process tree).
-- `providers()` — available agents.
-
-session fields: `status` (`running` → `completed` | `error` | `stopped`), `last_content` (final answer), `error`, `thread_id`, `log_tail` (live activity). sessions claiming `running` whose runner died are self-healed to `error` on read.
 
 ## tests
 
 ```bash
-vendor/bin/phpunit
+./vendor/bin/phpunit
 ```

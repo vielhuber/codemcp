@@ -56,30 +56,39 @@ final class Test extends \PHPUnit\Framework\TestCase
         );
     }
 
-    public function test__continue_on_running_session_is_rejected(): void
+    public function test__continue_on_running_session_enqueues(): void
     {
         $this->writeSession('running-1', [
             'status' => 'running',
             'pid' => getmypid(),
-            'thread_id' => 'abc'
+            'thread_id' => 'abc',
+            'started_at' => date(DATE_ATOM)
         ]);
-        $this->expectException(RuntimeException::class);
-        codemcp::create($this->config())->continue(session_id: 'running-1', prompt: 'go on');
+        $code = codemcp::create($this->config());
+        $session = $code->continue(session_id: 'running-1', prompt: 'first follow-up');
+        $this->assertSame('running', $session['status']);
+        $this->assertSame(['first follow-up'], $session['queue']);
+
+        $session = $code->continue(session_id: 'running-1', prompt: 'second follow-up');
+        $this->assertSame(['first follow-up', 'second follow-up'], $session['queue']);
+        $this->assertStringContainsString('queued (position 2)', (string) $session['hint']);
     }
 
-    public function test__continue_without_session_id_resolves_newest_folder_session(): void
+    public function test__start_on_running_folder_session_enqueues(): void
     {
         $this->writeSession('older', [
             'status' => 'running',
             'pid' => getmypid(),
+            'provider' => 'codex',
             'workdir' => $this->directory,
             'thread_id' => 'thread-old',
-            'updated_at' => date(DATE_ATOM, time() - 3600)
+            'started_at' => date(DATE_ATOM)
         ]);
-        // newest matching folder session is running → must be addressed and rejected
-        $this->expectException(RuntimeException::class);
-        $this->expectExceptionMessage('still running');
-        codemcp::create($this->config())->continue(prompt: 'go on', workdir: $this->directory);
+        $session = codemcp::create($this->config())->start(prompt: 'more work', workdir: $this->directory, provider: 'codex');
+
+        $this->assertSame('older', $session['session_id']);
+        $this->assertSame('running', $session['status']);
+        $this->assertSame(['more work'], $session['queue']);
     }
 
     public function test__start_continues_existing_folder_session(): void
@@ -93,29 +102,25 @@ final class Test extends \PHPUnit\Framework\TestCase
         $session = codemcp::create($this->config())->start(prompt: 'again', workdir: $this->directory, provider: 'codex');
 
         $this->assertSame('folder-done', $session['session_id']);
-        $this->assertSame('continue', $session['mode']);
         $this->assertSame('running', $session['status']);
+        $this->assertSame(['again'], $session['queue']);
     }
 
-    public function test__start_in_fresh_folder_starts_new_thread(): void
+    public function test__start_in_fresh_folder_starts_new_thread_and_runner_reports_errors(): void
     {
-        $session = codemcp::create($this->config())->start(prompt: 'fresh task', workdir: $this->directory, provider: 'codex');
-
+        // the repo has no agent binaries in node_modules — the detached runner
+        // must surface the spawn failure as a terminal error state
+        $code = codemcp::create($this->config());
+        $session = $code->start(prompt: 'fresh task', workdir: $this->directory, provider: 'codex');
         $this->assertSame('start', $session['mode']);
         $this->assertSame('running', $session['status']);
-    }
 
-    public function test__continue_without_history_errors_via_detached_runner(): void
-    {
-        $code = codemcp::create($this->config());
-        $session = $code->continue(prompt: 'go on', workdir: $this->directory);
-        $this->assertSame('running', $session['status']);
         $deadline = time() + 30;
         do {
             $session = $code->wait($session['session_id'], 5);
         } while ($session['status'] === 'running' && time() < $deadline);
         $this->assertSame('error', $session['status']);
-        $this->assertStringContainsString('no previous codex session', (string) $session['error']);
+        $this->assertNotSame('', (string) $session['error']);
     }
 
     public function test__status_self_heals_dead_runner(): void
@@ -146,7 +151,7 @@ final class Test extends \PHPUnit\Framework\TestCase
             'status' => 'completed',
             'last_content' => 'the answer'
         ]);
-        $session = codemcp::create($this->config())->wait(session_id: 'done-2', timeout_seconds: 30);
+        $session = codemcp::create($this->config())->wait(session_id: 'done-2', timeout: 30);
 
         $this->assertSame('completed', $session['status']);
         $this->assertSame('the answer', $session['last_content']);
