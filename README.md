@@ -7,86 +7,63 @@
 
 # 📟 codemcp 📟
 
-codemcp is a small mcp server that exposes agentic coding through codex and claude code. it does not reimplement a coding agent, it forwards normalized MCP tools to the closest official agent interface:
-
-- **Codex** via `codex mcp-server`
-- **Claude Code** via `claude -p` / `claude --resume`
+codemcp exposes agentic coding through the official harnesses of **Codex** (`codex mcp-server` / `codex exec resume`) and **Claude Code** (`claude -p` / `--resume` / `--continue`) as a small mcp server. runs are **asynchronous**: they execute detached, results are collected by polling — safe behind any transport timeout.
 
 ## installation
-
-install once with [composer](https://getcomposer.org):
 
 ```bash
 composer require vielhuber/codemcp
 ```
 
-then add this to your files:
-
-```php
-require __DIR__ . '/vendor/autoload.php';
-use vielhuber\codemcp\codemcp;
-```
+codemcp expects `codex` and `claude` in the local `node_modules/.bin` of the project where the server is started.
 
 ## setup
 
-codemcp reads configuration from the `.env` in your project root.
+`.env` in the project root:
 
 ```dotenv
-CODEMCP_PROVIDER=codex
-CODEMCP_WORKDIR=/app
-CODEMCP_MODEL=
-CODEMCP_EFFORT=
+CODEMCP_PROVIDER=codex          # default agent: codex | claude
+CODEMCP_WORKDIR=/app            # default working directory
+CODEMCP_MODEL=                  # optional default model
+CODEMCP_EFFORT=                 # optional default effort
+CODEMCP_TIMEOUT=1800            # max seconds per agent run
+CODEMCP_SESSION_DIR=.codemcp/sessions
 
 MCP_TOKEN=
 ```
 
-`CODEMCP_MODEL` and `CODEMCP_EFFORT` are optional defaults; both can be overridden per call via the `model` and `effort` arguments of `start`.
+## api
 
-Claude Code also has `claude mcp serve`, but that exposes Claude Code's tools to another MCP client. For running Claude Code as the coding agent, codemcp uses print/resume mode.
+start the mcp server with `vendor/bin/mcp-server.php`. tools:
 
-codemcp expects `codex` and `claude` in the local `node_modules/.bin` directory of the project where the MCP server is started.
+- `start(prompt, workdir?, provider?, model?, effort?)` — spawn a detached run, returns immediately (`status: running`). **folder continuity**: if the workdir already has history (own session or console thread), the newest thread is continued automatically; only a fresh folder starts a new thread.
+- `wait(session_id, timeout_seconds?)` — block up to 240s until the run finishes, then returns the session. check `status` afterwards; call again while still `running`.
+- `status(session_id?)` — non-blocking snapshot (single session incl. `log_tail`, or all sessions).
+- `continue(prompt, session_id?, workdir?, provider?)` — async follow-up with full context. without `session_id` the newest thread of the folder is continued (console parity with `codex resume --last` / `claude --continue`), including threads started outside this mcp.
+- `stop(session_id)` — abort a running session (kills the whole process tree).
+- `providers()` — available agents.
 
-## usage
-
-```php
-$code = codemcp::create();
-
-$result = $code->start(
-    prompt: 'Review this project and list the highest-risk bugs.',
-    workdir: '/app',
-    provider: 'codex',
-    model: 'gpt-5.2-codex',
-    effort: 'high'
-);
-
-print_r($result);
-```
+session fields: `status` (`running` → `completed` | `error` | `stopped`), `last_content` (final answer), `error`, `thread_id`, `log_tail` (live activity). sessions claiming `running` whose runner died are self-healed to `error` on read.
 
 ## model & effort
 
-`start` accepts optional `model` and `effort` (`minimal` | `low` | `medium` | `high`) arguments. codemcp forwards them to the native lever of each agent:
-
-| provider | model | effort |
+| provider | model | effort (`minimal`&#124;`low`&#124;`medium`&#124;`high`&#124;`xhigh`) |
 | --- | --- | --- |
-| codex | `model` argument of the `codex` MCP tool (e.g. `gpt-5.2-codex`) | config override `model_reasoning_effort` |
-| claude | `--model` CLI flag (e.g. `claude-opus-4-8`, `sonnet`) | thinking budget via `MAX_THINKING_TOKENS` env (minimal=1024, low=4096, medium=10240, high=31999) |
+| codex | `model` argument of the `codex` MCP tool; omit by default unless you know the account supports the requested model | config override `model_reasoning_effort`; `minimal` is ignored because Codex rejects it with the built-in toolset |
+| claude | `--model` CLI flag (e.g. `claude-opus-4-8`, `sonnet`) | native `--effort` flag (`minimal` maps to `low`) |
 
-both settings are stored in the session: `continue` re-applies them for claude; codex threads retain the model/effort they were started with (`codex-reply` accepts no overrides).
+both persist for the whole session; codex threads keep the settings they were started with. claude runs with `--dangerously-skip-permissions` (+ `IS_SANDBOX=1`), codex with `danger-full-access` — intended for externally sandboxed environments.
 
-## mcp server
+## php usage
 
-codemcp ships as a standalone MCP server:
-
-```bash
-vendor/bin/mcp-server.php
+```php
+$code = codemcp::create();
+$session = $code->start(prompt: 'Fix the failing tests.', workdir: '/app', provider: 'claude', model: 'claude-opus-4-8', effort: 'high');
+do {
+    $session = $code->wait($session['session_id'], 120);
+} while ($session['status'] === 'running');
+echo $session['status'] === 'completed' ? $session['last_content'] : $session['error'];
 ```
-
-available tools:
-
-- `start(prompt, workdir?, provider?, model?, effort?)`
-- `continue(session_id, prompt)`
-- `status(session_id?)`
-- `providers()`
 
 ## tests
 

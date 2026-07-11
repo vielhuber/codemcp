@@ -45,6 +45,135 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->assertSame([], $status['sessions']['sessions']);
     }
 
+    public function test__invalid_effort_is_rejected(): void
+    {
+        $this->expectException(RuntimeException::class);
+        codemcp::create($this->config())->start(
+            prompt: 'review',
+            workdir: $this->directory,
+            provider: 'codex',
+            effort: 'ultra'
+        );
+    }
+
+    public function test__continue_on_running_session_is_rejected(): void
+    {
+        $this->writeSession('running-1', [
+            'status' => 'running',
+            'pid' => getmypid(),
+            'thread_id' => 'abc'
+        ]);
+        $this->expectException(RuntimeException::class);
+        codemcp::create($this->config())->continue(session_id: 'running-1', prompt: 'go on');
+    }
+
+    public function test__continue_without_session_id_resolves_newest_folder_session(): void
+    {
+        $this->writeSession('older', [
+            'status' => 'running',
+            'pid' => getmypid(),
+            'workdir' => $this->directory,
+            'thread_id' => 'thread-old',
+            'updated_at' => date(DATE_ATOM, time() - 3600)
+        ]);
+        // newest matching folder session is running → must be addressed and rejected
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('still running');
+        codemcp::create($this->config())->continue(prompt: 'go on', workdir: $this->directory);
+    }
+
+    public function test__start_continues_existing_folder_session(): void
+    {
+        $this->writeSession('folder-done', [
+            'status' => 'completed',
+            'provider' => 'codex',
+            'workdir' => $this->directory,
+            'thread_id' => 'thread-1'
+        ]);
+        $session = codemcp::create($this->config())->start(prompt: 'again', workdir: $this->directory, provider: 'codex');
+
+        $this->assertSame('folder-done', $session['session_id']);
+        $this->assertSame('continue', $session['mode']);
+        $this->assertSame('running', $session['status']);
+    }
+
+    public function test__start_in_fresh_folder_starts_new_thread(): void
+    {
+        $session = codemcp::create($this->config())->start(prompt: 'fresh task', workdir: $this->directory, provider: 'codex');
+
+        $this->assertSame('start', $session['mode']);
+        $this->assertSame('running', $session['status']);
+    }
+
+    public function test__continue_without_history_errors_via_detached_runner(): void
+    {
+        $code = codemcp::create($this->config());
+        $session = $code->continue(prompt: 'go on', workdir: $this->directory);
+        $this->assertSame('running', $session['status']);
+        $deadline = time() + 30;
+        do {
+            $session = $code->wait($session['session_id'], 5);
+        } while ($session['status'] === 'running' && time() < $deadline);
+        $this->assertSame('error', $session['status']);
+        $this->assertStringContainsString('no previous codex session', (string) $session['error']);
+    }
+
+    public function test__status_self_heals_dead_runner(): void
+    {
+        $this->writeSession('dead-1', [
+            'status' => 'running',
+            'pid' => 99999999,
+            'started_at' => date(DATE_ATOM, time() - 3600)
+        ]);
+        $status = codemcp::create($this->config())->status(session_id: 'dead-1');
+
+        $this->assertSame('error', $status['status']);
+    }
+
+    public function test__stop_requires_running_session(): void
+    {
+        $this->writeSession('done-1', [
+            'status' => 'completed',
+            'last_content' => 'result'
+        ]);
+        $this->expectException(RuntimeException::class);
+        codemcp::create($this->config())->stop(session_id: 'done-1');
+    }
+
+    public function test__wait_returns_finished_session_immediately(): void
+    {
+        $this->writeSession('done-2', [
+            'status' => 'completed',
+            'last_content' => 'the answer'
+        ]);
+        $session = codemcp::create($this->config())->wait(session_id: 'done-2', timeout_seconds: 30);
+
+        $this->assertSame('completed', $session['status']);
+        $this->assertSame('the answer', $session['last_content']);
+    }
+
+    public function test__legacy_session_without_status_counts_as_completed(): void
+    {
+        $this->writeSession('legacy-1', [
+            'last_content' => 'old result',
+            'thread_id' => 'xyz'
+        ]);
+        $status = codemcp::create($this->config())->status(session_id: 'legacy-1');
+
+        $this->assertSame('completed', $status['status']);
+    }
+
+    private function writeSession(string $id, array $data): void
+    {
+        $dir = $this->directory . '/sessions';
+        if (!is_dir($dir)) {
+            mkdir($dir, 0775, true);
+        }
+        $data['id'] = $id;
+        $data['updated_at'] = $data['updated_at'] ?? date(DATE_ATOM);
+        file_put_contents($dir . '/' . $id . '.json', json_encode($data, JSON_PRETTY_PRINT));
+    }
+
     private function config(): array
     {
         return [
