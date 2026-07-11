@@ -655,21 +655,11 @@ final class codemcp
                     $output_file,
                     $prompt
                 ],
-                null
+                null,
+                [],
+                $event_log
             );
             $stdout = is_string($result['raw'] ?? null) ? $result['raw'] : '';
-            if ($event_log !== null && $stdout !== '') {
-                $events = [];
-                foreach (explode("\n", $stdout) as $line) {
-                    $event = json_decode(trim($line), true);
-                    if (is_array($event) && isset($event['type'])) {
-                        $events[] = '[' . date('H:i:s') . '] ' . $event['type'];
-                    }
-                }
-                if ($events !== []) {
-                    file_put_contents($event_log, implode("\n", $events) . "\n", FILE_APPEND);
-                }
-            }
             $content = is_file($output_file) ? trim((string) file_get_contents($output_file)) : '';
             return [
                 'provider' => 'codex',
@@ -922,7 +912,7 @@ final class codemcp
         }
     }
 
-    private function runCommand(array $command, ?string $workdir, array $extra_env = []): array
+    private function runCommand(array $command, ?string $workdir, array $extra_env = [], ?string $event_log = null): array
     {
         $process = proc_open(
             $command,
@@ -944,13 +934,32 @@ final class codemcp
         stream_set_blocking($pipes[2], false);
         $stdout = '';
         $stderr = '';
+        $event_buffer = '';
         $started = time();
 
         while ((time() - $started) <= $this->config['timeout']) {
-            $stdout .= (string) stream_get_contents($pipes[1]);
+            $stdout_chunk = (string) stream_get_contents($pipes[1]);
+            $stdout .= $stdout_chunk;
             $stderr .= (string) stream_get_contents($pipes[2]);
+            if ($event_log !== null && $stdout_chunk !== '') {
+                $event_buffer .= $stdout_chunk;
+                while (($newline_position = strpos($event_buffer, "\n")) !== false) {
+                    $line = substr($event_buffer, 0, $newline_position);
+                    $event_buffer = substr($event_buffer, $newline_position + 1);
+                    $event = json_decode(trim($line), true);
+                    if (is_array($event) && isset($event['type'])) {
+                        file_put_contents($event_log, '[' . date('H:i:s') . '] ' . $event['type'] . "\n", FILE_APPEND | LOCK_EX);
+                    }
+                }
+            }
             $status = proc_get_status($process);
             if (($status['running'] ?? false) === false) {
+                if ($event_log !== null && trim($event_buffer) !== '') {
+                    $event = json_decode(trim($event_buffer), true);
+                    if (is_array($event) && isset($event['type'])) {
+                        file_put_contents($event_log, '[' . date('H:i:s') . '] ' . $event['type'] . "\n", FILE_APPEND | LOCK_EX);
+                    }
+                }
                 foreach ($pipes as $pipe) {
                     if (is_resource($pipe)) {
                         fclose($pipe);
@@ -970,13 +979,13 @@ final class codemcp
         throw new RuntimeException('codemcp: command timed out after ' . $this->config['timeout'] . ' seconds.');
     }
 
-    private function runInteractiveCommand(array $command, ?string $workdir, array $extra_env = []): array
+    private function runInteractiveCommand(array $command, ?string $workdir, array $extra_env = [], ?string $event_log = null): array
     {
         $script = implode(' ', array_map('escapeshellarg', $command));
         if ($workdir !== null) {
             $script = 'cd ' . escapeshellarg($workdir) . ' && ' . $script;
         }
-        return $this->runCommand(['bash', '-ic', $script], null, $extra_env);
+        return $this->runCommand(['bash', '-ic', $script], null, $extra_env, $event_log);
     }
 
     private function normalizeMcpResult(array $result, string $tool): array
