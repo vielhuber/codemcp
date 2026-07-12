@@ -369,7 +369,7 @@ final class codemcp
             ],
             'claude' => [
                 'provider' => 'claude',
-                'command' => 'bash -ic "' . $this->agentBinary('claude') . ' -p"',
+                'command' => $this->agentBinary('claude') . ' -p',
                 'mode' => 'cli-agent'
             ]
         ];
@@ -487,6 +487,7 @@ final class codemcp
             $thread_id !== '' && $provider_name === 'claude' => $this->continueClaude(
                 thread_id: $thread_id,
                 prompt: $prompt,
+                workdir: $workdir,
                 model: $model,
                 effort: $effort
             ),
@@ -683,19 +684,25 @@ final class codemcp
             $this->claudeArgs($model, $effort),
             [$prompt]
         );
-        $result = $this->runInteractiveCommand($command, $workdir, $this->claudeEnv());
+        $result = $this->runCommand($command, $workdir, $this->claudeEnv());
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
         return $result;
     }
 
-    private function continueClaude(string $thread_id, string $prompt, ?string $model = null, ?string $effort = null): array
+    private function continueClaude(
+        string $thread_id,
+        string $prompt,
+        string $workdir,
+        ?string $model = null,
+        ?string $effort = null
+    ): array
     {
         $command = array_merge(
             [$this->agentBinary('claude'), '--resume', $thread_id, '-p', '--output-format', 'json'],
             $this->claudeArgs($model, $effort),
             [$prompt]
         );
-        $result = $this->runInteractiveCommand($command, null, $this->claudeEnv());
+        $result = $this->runCommand($command, $workdir, $this->claudeEnv());
         $result['thread_id'] = $result['thread_id'] ?? $thread_id;
         return $result;
     }
@@ -750,7 +757,7 @@ final class codemcp
             $this->claudeArgs($model, $effort),
             [$prompt]
         );
-        return $this->runInteractiveCommand($command, $workdir, $this->claudeEnv());
+        return $this->runCommand($command, $workdir, $this->claudeEnv());
     }
 
     private function claudeArgs(?string $model, ?string $effort): array

@@ -114,10 +114,11 @@ final class Test extends \PHPUnit\Framework\TestCase
         $session = $code->start(prompt: 'fresh task', workdir: $this->directory, provider: 'codex');
         $this->assertSame('start', $session['mode']);
         $this->assertSame('running', $session['status']);
+        $sessionId = $session['session_id'];
 
         $deadline = time() + 30;
         do {
-            $session = $code->wait($session['session_id'], 5);
+            $session = $code->wait($sessionId, 5);
         } while ($session['status'] === 'running' && time() < $deadline);
         $this->assertSame('error', $session['status']);
         $this->assertNotSame('', (string) $session['error']);
