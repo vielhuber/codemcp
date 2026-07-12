@@ -46,15 +46,27 @@ final class codemcp
      * prompt.
      *
      * @param string $prompt Complete, self-contained task description. The agent knows NOTHING about this conversation — include the concrete goal, target paths/files, constraints (e.g. "analysis only, do not change files"), and the command(s) to verify success (e.g. "run vendor/bin/phpunit and make it pass").
-     * @param string|null $workdir Absolute path the agent works in — also the key for automatic folder continuity. Must exist. Omit to use the configured default.
+     * @param string|null $workdir Absolute path the agent works in — also the key for automatic folder continuity. Must exist. Omit to create a new isolated directory under the system temp directory.
      * @param string|null $provider Coding agent: "codex" (Codex CLI) or "claude" (Claude Code). Omit to use the configured default.
      * @param string|null $model Provider-native model name. Omit for codex unless the user explicitly requests a known supported model; claude examples: "claude-opus-4-8" or "sonnet". Omit to use the agent's own default.
      * @param string|null $effort Reasoning effort: "minimal", "low", "medium", "high" or "xhigh". Maps to the reasoning-effort config on codex and to the native --effort level on claude. Higher = more thorough but slower. Omit for the agent's default.
      */
     #[McpTool(name: 'start')]
-    public function startTool(string $prompt, ?string $workdir = null, ?string $provider = null, ?string $model = null, ?string $effort = null): array
+    public function startTool(
+        string $prompt,
+        ?string $workdir = null,
+        ?string $provider = null,
+        ?string $model = null,
+        ?string $effort = null
+    ): array
     {
-        return $this->start(prompt: $prompt, workdir: $workdir, provider: $provider, model: $model, effort: $effort);
+        return $this->start(
+            prompt: $prompt,
+            workdir: $workdir,
+            provider: $provider,
+            model: $model,
+            effort: $effort
+        );
     }
 
     /**
@@ -104,7 +116,7 @@ final class codemcp
     }
 
     /**
-     * Show the active configuration (default provider, workdir, model, effort,
+     * Show the active configuration (default provider, model, effort,
      * timeout) and stored sessions. Without `session_id`, lists all known
      * sessions newest first; with `session_id`, returns just that session
      * including `status` ("running" | "completed" | "error" | "stopped"),
@@ -146,7 +158,13 @@ final class codemcp
         return $this->providers();
     }
 
-    public function start(string $prompt, ?string $workdir = null, ?string $provider = null, ?string $model = null, ?string $effort = null): array
+    public function start(
+        string $prompt,
+        ?string $workdir = null,
+        ?string $provider = null,
+        ?string $model = null,
+        ?string $effort = null
+    ): array
     {
         $prompt = trim($prompt);
         if ($prompt === '') {
@@ -154,9 +172,9 @@ final class codemcp
         }
 
         $provider_name = $this->normalizeProvider($provider);
-        $workdir = $this->resolveWorkdir($workdir);
         $model = $this->normalizeModel($model);
         $effort = $this->normalizeEffort($effort);
+        $workdir = $this->resolveWorkdir($workdir);
 
         // folder continuity: existing history wins over a fresh thread
         $resumed = $this->continueFolderIfHistory($workdir, $provider_name, $prompt, $model, $effort);
@@ -350,7 +368,6 @@ final class codemcp
         return [
             'config' => [
                 'provider' => $this->config['provider'],
-                'workdir' => $this->config['workdir'],
                 'model' => ($this->config['model'] ?? '') === '' ? null : $this->config['model'],
                 'effort' => ($this->config['effort'] ?? '') === '' ? null : $this->config['effort'],
                 'timeout' => $this->config['timeout']
@@ -556,7 +573,6 @@ final class codemcp
             // this instance was configured programmatically instead of via .env
             $this->processEnv([
                 'CODEMCP_PROVIDER' => (string) $this->config['provider'],
-                'CODEMCP_WORKDIR' => (string) $this->config['workdir'],
                 'CODEMCP_MODEL' => (string) ($this->config['model'] ?? ''),
                 'CODEMCP_EFFORT' => (string) ($this->config['effort'] ?? ''),
                 'CODEMCP_TIMEOUT' => (string) $this->config['timeout'],
@@ -1084,7 +1100,13 @@ final class codemcp
 
     private function resolveWorkdir(?string $workdir): string
     {
-        $workdir = rtrim(trim($workdir ?: $this->config['workdir']), '/');
+        if ($workdir === null || trim($workdir) === '') {
+            $workdir = rtrim(sys_get_temp_dir(), '/') . '/codemcp/' . $this->createUuid();
+            if (!is_dir($workdir) && !mkdir($workdir, 0775, true) && !is_dir($workdir)) {
+                throw new RuntimeException('codemcp: temporary workdir could not be created: ' . $workdir);
+            }
+        }
+        $workdir = rtrim(trim($workdir), '/');
         if ($workdir === '') {
             throw new RuntimeException('codemcp: workdir must not be empty.');
         }
@@ -1098,7 +1120,6 @@ final class codemcp
     {
         return [
             'provider' => strtolower($this->env('CODEMCP_PROVIDER', 'codex')),
-            'workdir' => $this->env('CODEMCP_WORKDIR', getcwd() ?: dirname(__DIR__)),
             'model' => $this->env('CODEMCP_MODEL', ''),
             'effort' => $this->env('CODEMCP_EFFORT', ''),
             'timeout' => max(1, (int) $this->env('CODEMCP_TIMEOUT', '1800')),

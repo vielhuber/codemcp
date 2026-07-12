@@ -38,6 +38,39 @@ final class Test extends \PHPUnit\Framework\TestCase
         );
     }
 
+    public function test__missing_workdir_uses_a_random_isolated_temporary_directory(): void
+    {
+        $temporaryWorkdir = null;
+        try {
+            $code = codemcp::create($this->config());
+            $session = $code->start(prompt: 'review', provider: 'codex');
+            $temporaryWorkdir = $session['workdir'];
+            $this->assertMatchesRegularExpression(
+                '#^' . preg_quote(sys_get_temp_dir(), '#') . '/codemcp/[a-f0-9-]{36}$#',
+                $temporaryWorkdir
+            );
+            $session = $this->waitUntilFinished($code, $session['session_id']);
+            $this->assertSame('error', $session['status']);
+        } finally {
+            if ($temporaryWorkdir !== null) {
+                $this->removeDirectory($temporaryWorkdir);
+            }
+        }
+    }
+
+    public function test__explicit_workdir_is_used(): void
+    {
+        $code = codemcp::create($this->config());
+        $session = $code->start(
+            prompt: 'review',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
+
+        $this->assertSame($this->directory, $session['workdir']);
+        $this->waitUntilFinished($code, $session['session_id']);
+    }
+
     public function test__status_lists_sessions(): void
     {
         $status = codemcp::create($this->config())->status();
@@ -114,12 +147,7 @@ final class Test extends \PHPUnit\Framework\TestCase
         $session = $code->start(prompt: 'fresh task', workdir: $this->directory, provider: 'codex');
         $this->assertSame('start', $session['mode']);
         $this->assertSame('running', $session['status']);
-        $sessionId = $session['session_id'];
-
-        $deadline = time() + 30;
-        do {
-            $session = $code->wait($sessionId, 5);
-        } while ($session['status'] === 'running' && time() < $deadline);
+        $session = $this->waitUntilFinished($code, $session['session_id']);
         $this->assertSame('error', $session['status']);
         $this->assertNotSame('', (string) $session['error']);
     }
@@ -180,11 +208,19 @@ final class Test extends \PHPUnit\Framework\TestCase
         file_put_contents($dir . '/' . $id . '.json', json_encode($data, JSON_PRETTY_PRINT));
     }
 
+    private function waitUntilFinished(codemcp $code, string $sessionId): array
+    {
+        $deadline = time() + 30;
+        do {
+            $session = $code->wait($sessionId, 5);
+        } while ($session['status'] === 'running' && time() < $deadline);
+        return $session;
+    }
+
     private function config(): array
     {
         return [
             'provider' => 'codex',
-            'workdir' => $this->directory,
             'timeout' => 1,
             'session_dir' => $this->directory . '/sessions'
         ];

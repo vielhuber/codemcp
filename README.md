@@ -21,7 +21,6 @@ composer require vielhuber/codemcp
 
 ```dotenv
 CODEMCP_PROVIDER=codex          # default agent: codex | claude
-CODEMCP_WORKDIR=/app            # default working directory
 CODEMCP_MODEL=                  # optional default model
 CODEMCP_EFFORT=                 # optional default effort
 CODEMCP_TIMEOUT=1800            # max seconds per agent run
@@ -65,6 +64,8 @@ $session = $code->stop(
 
 $providers = $code->providers();
 ```
+
+When `workdir` is omitted, each new session gets a random isolated directory under `sys_get_temp_dir()/codemcp/`. Pass an explicit directory only when the agent should work in an existing project.
 
 ## tests
 
