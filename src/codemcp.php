@@ -8,12 +8,13 @@ use vielhuber\simplemcp\Attributes\McpTool;
 
 final class codemcp
 {
+    private const DEFAULT_PROVIDER = 'codex';
+    private const DEFAULT_TIMEOUT = 1800;
     private array $config;
 
     public function __construct(?array $config = null)
     {
-        $this->loadEnvFile();
-        $this->config = $config ?? $this->envConfig();
+        $this->config = array_merge($this->defaultConfig(), $config ?? []);
     }
 
     public static function create(?array $config = null): self
@@ -46,18 +47,18 @@ final class codemcp
      * prompt.
      *
      * @param string $prompt Complete, self-contained task description. The agent knows NOTHING about this conversation — include the concrete goal, target paths/files, constraints (e.g. "analysis only, do not change files"), and the command(s) to verify success (e.g. "run vendor/bin/phpunit and make it pass").
-     * @param string|null $workdir Absolute path the agent works in — also the key for automatic folder continuity. Must exist. Omit to create a new isolated directory under the system temp directory.
+     * @param string $model Provider-native model name. Required for every new session; claude examples: "claude-opus-4-8" or "sonnet".
+     * @param string $effort Reasoning effort: "minimal", "low", "medium", "high" or "xhigh". Maps to the reasoning-effort config on codex and to the native --effort level on claude. Higher = more thorough but slower.
+     * @param string|null $workdir Absolute path the agent works in — also the key for automatic folder continuity. Created when missing. Omit to create a new isolated directory under the system temp directory.
      * @param string|null $provider Coding agent: "codex" (Codex CLI) or "claude" (Claude Code). Omit to use the configured default.
-     * @param string|null $model Provider-native model name. Omit for codex unless the user explicitly requests a known supported model; claude examples: "claude-opus-4-8" or "sonnet". Omit to use the agent's own default.
-     * @param string|null $effort Reasoning effort: "minimal", "low", "medium", "high" or "xhigh". Maps to the reasoning-effort config on codex and to the native --effort level on claude. Higher = more thorough but slower. Omit for the agent's default.
      */
     #[McpTool(name: 'start')]
     public function startTool(
         string $prompt,
+        string $model,
+        string $effort,
         ?string $workdir = null,
-        ?string $provider = null,
-        ?string $model = null,
-        ?string $effort = null
+        ?string $provider = null
     ): array
     {
         return $this->start(
@@ -116,8 +117,8 @@ final class codemcp
     }
 
     /**
-     * Show the active configuration (default provider, model, effort,
-     * timeout) and stored sessions. Without `session_id`, lists all known
+     * Show the active configuration (default provider and timeout) and stored
+     * sessions. Without `session_id`, lists all known
      * sessions newest first; with `session_id`, returns just that session
      * including `status` ("running" | "completed" | "error" | "stopped"),
      * `last_content` (the final answer when completed) and `log_tail` (recent
@@ -160,10 +161,10 @@ final class codemcp
 
     public function start(
         string $prompt,
+        string $model,
+        string $effort,
         ?string $workdir = null,
-        ?string $provider = null,
-        ?string $model = null,
-        ?string $effort = null
+        ?string $provider = null
     ): array
     {
         $prompt = trim($prompt);
@@ -368,8 +369,6 @@ final class codemcp
         return [
             'config' => [
                 'provider' => $this->config['provider'],
-                'model' => ($this->config['model'] ?? '') === '' ? null : $this->config['model'],
-                'effort' => ($this->config['effort'] ?? '') === '' ? null : $this->config['effort'],
                 'timeout' => $this->config['timeout']
             ],
             'sessions' => $this->sessionStatus()
@@ -556,6 +555,12 @@ final class codemcp
             escapeshellarg(__DIR__ . '/runner.php') .
             ' ' .
             escapeshellarg($id) .
+            ' ' .
+            escapeshellarg((string) $this->config['provider']) .
+            ' ' .
+            escapeshellarg((string) $this->config['timeout']) .
+            ' ' .
+            escapeshellarg((string) $this->config['session_dir']) .
             ' >> ' .
             escapeshellarg($log) .
             ' 2>&1 < /dev/null &';
@@ -568,16 +573,7 @@ final class codemcp
             ],
             $pipes,
             $this->projectDir(),
-            // pass the EFFECTIVE config through the environment: the runner
-            // builds its own instance and must see the same values even when
-            // this instance was configured programmatically instead of via .env
-            $this->processEnv([
-                'CODEMCP_PROVIDER' => (string) $this->config['provider'],
-                'CODEMCP_MODEL' => (string) ($this->config['model'] ?? ''),
-                'CODEMCP_EFFORT' => (string) ($this->config['effort'] ?? ''),
-                'CODEMCP_TIMEOUT' => (string) $this->config['timeout'],
-                'CODEMCP_SESSION_DIR' => (string) $this->config['session_dir']
-            ])
+            $this->processEnv()
         );
         if (!is_resource($process)) {
             return $this->withSessionLock($id, function () use ($id) {
@@ -1080,17 +1076,20 @@ final class codemcp
         return $provider;
     }
 
-    private function normalizeModel(?string $model): ?string
+    private function normalizeModel(string $model): string
     {
-        $model = trim($model ?: ($this->config['model'] ?? ''));
-        return $model === '' ? null : $model;
+        $model = trim($model);
+        if ($model === '') {
+            throw new RuntimeException('codemcp: model must not be empty.');
+        }
+        return $model;
     }
 
-    private function normalizeEffort(?string $effort): ?string
+    private function normalizeEffort(string $effort): string
     {
-        $effort = strtolower(trim($effort ?: ($this->config['effort'] ?? '')));
+        $effort = strtolower(trim($effort));
         if ($effort === '') {
-            return null;
+            throw new RuntimeException('codemcp: effort must not be empty.');
         }
         if (!in_array($effort, ['minimal', 'low', 'medium', 'high', 'xhigh'], true)) {
             throw new RuntimeException('codemcp: unsupported effort (use minimal|low|medium|high|xhigh): ' . $effort);
@@ -1110,56 +1109,19 @@ final class codemcp
         if ($workdir === '') {
             throw new RuntimeException('codemcp: workdir must not be empty.');
         }
-        if (!is_dir($workdir)) {
-            throw new RuntimeException('codemcp: workdir does not exist: ' . $workdir);
+        if (!is_dir($workdir) && !mkdir($workdir, 0775, true) && !is_dir($workdir)) {
+            throw new RuntimeException('codemcp: workdir could not be created: ' . $workdir);
         }
         return $workdir;
     }
 
-    private function envConfig(): array
+    private function defaultConfig(): array
     {
         return [
-            'provider' => strtolower($this->env('CODEMCP_PROVIDER', 'codex')),
-            'model' => $this->env('CODEMCP_MODEL', ''),
-            'effort' => $this->env('CODEMCP_EFFORT', ''),
-            'timeout' => max(1, (int) $this->env('CODEMCP_TIMEOUT', '1800')),
-            'session_dir' => $this->absolutePath($this->env('CODEMCP_SESSION_DIR', '.codemcp/sessions'))
+            'provider' => self::DEFAULT_PROVIDER,
+            'timeout' => self::DEFAULT_TIMEOUT,
+            'session_dir' => $this->absolutePath('.codemcp/sessions')
         ];
-    }
-
-    private function loadEnvFile(): void
-    {
-        $cwd = getcwd();
-        $paths = array_unique(array_filter([
-            is_string($cwd) ? $cwd . '/.env' : null,
-            dirname(__DIR__) . '/.env'
-        ]));
-
-        foreach ($paths as $path) {
-            if (!is_file($path)) {
-                continue;
-            }
-            foreach (file($path, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES) ?: [] as $line) {
-                $line = trim($line);
-                if ($line === '' || str_starts_with($line, '#') || !str_contains($line, '=')) {
-                    continue;
-                }
-                [$key, $value] = explode('=', $line, 2);
-                $key = trim($key);
-                $value = trim($value, " \t\n\r\0\x0B\"'");
-                if ($key !== '' && getenv($key) === false) {
-                    putenv($key . '=' . $value);
-                    $_ENV[$key] = $value;
-                    $_SERVER[$key] = $value;
-                }
-            }
-        }
-    }
-
-    private function env(string $key, string $default): string
-    {
-        $value = getenv($key);
-        return $value === false ? $default : (string) $value;
     }
 
     private function absolutePath(string $path): string

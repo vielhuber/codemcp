@@ -18,14 +18,21 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->removeDirectory($this->directory);
     }
 
-    public function test__unknown_workdir_is_rejected(): void
+    public function test__missing_explicit_workdir_is_created(): void
     {
-        $this->expectException(RuntimeException::class);
-        codemcp::create($this->config())->start(
+        $workdir = $this->directory . '/new/project';
+        $code = codemcp::create($this->config());
+        $session = $code->start(
             prompt: 'change something',
-            workdir: $this->directory . '/missing',
+            model: 'test-model',
+            effort: 'high',
+            workdir: $workdir,
             provider: 'codex'
         );
+
+        $this->assertDirectoryExists($workdir);
+        $this->assertSame($workdir, $session['workdir']);
+        $this->waitUntilFinished($code, $session['session_id']);
     }
 
     public function test__unknown_provider_is_rejected(): void
@@ -33,6 +40,8 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->expectException(RuntimeException::class);
         codemcp::create($this->config())->start(
             prompt: 'review',
+            model: 'test-model',
+            effort: 'high',
             workdir: $this->directory,
             provider: 'missing'
         );
@@ -43,7 +52,12 @@ final class Test extends \PHPUnit\Framework\TestCase
         $temporaryWorkdir = null;
         try {
             $code = codemcp::create($this->config());
-            $session = $code->start(prompt: 'review', provider: 'codex');
+            $session = $code->start(
+                prompt: 'review',
+                model: 'test-model',
+                effort: 'high',
+                provider: 'codex'
+            );
             $temporaryWorkdir = $session['workdir'];
             $this->assertMatchesRegularExpression(
                 '#^' . preg_quote(sys_get_temp_dir(), '#') . '/codemcp/[a-f0-9-]{36}$#',
@@ -63,6 +77,8 @@ final class Test extends \PHPUnit\Framework\TestCase
         $code = codemcp::create($this->config());
         $session = $code->start(
             prompt: 'review',
+            model: 'test-model',
+            effort: 'high',
             workdir: $this->directory,
             provider: 'codex'
         );
@@ -83,10 +99,46 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->expectException(RuntimeException::class);
         codemcp::create($this->config())->start(
             prompt: 'review',
+            model: 'test-model',
             workdir: $this->directory,
             provider: 'codex',
             effort: 'ultra'
         );
+    }
+
+    public function test__empty_model_is_rejected(): void
+    {
+        $this->expectException(RuntimeException::class);
+        codemcp::create($this->config())->start(
+            prompt: 'review',
+            model: '',
+            effort: 'high',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
+    }
+
+    public function test__empty_effort_is_rejected(): void
+    {
+        $this->expectException(RuntimeException::class);
+        codemcp::create($this->config())->start(
+            prompt: 'review',
+            model: 'test-model',
+            effort: '',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
+    }
+
+    public function test__model_and_effort_are_required_tool_arguments(): void
+    {
+        $parameters = [];
+        foreach ((new ReflectionMethod(codemcp::class, 'startTool'))->getParameters() as $parameter) {
+            $parameters[$parameter->getName()] = $parameter;
+        }
+
+        $this->assertFalse($parameters['model']->isOptional());
+        $this->assertFalse($parameters['effort']->isOptional());
     }
 
     public function test__continue_on_running_session_enqueues(): void
@@ -117,7 +169,13 @@ final class Test extends \PHPUnit\Framework\TestCase
             'thread_id' => 'thread-old',
             'started_at' => date(DATE_ATOM)
         ]);
-        $session = codemcp::create($this->config())->start(prompt: 'more work', workdir: $this->directory, provider: 'codex');
+        $session = codemcp::create($this->config())->start(
+            prompt: 'more work',
+            model: 'test-model',
+            effort: 'high',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
 
         $this->assertSame('older', $session['session_id']);
         $this->assertSame('running', $session['status']);
@@ -132,7 +190,13 @@ final class Test extends \PHPUnit\Framework\TestCase
             'workdir' => $this->directory,
             'thread_id' => 'thread-1'
         ]);
-        $session = codemcp::create($this->config())->start(prompt: 'again', workdir: $this->directory, provider: 'codex');
+        $session = codemcp::create($this->config())->start(
+            prompt: 'again',
+            model: 'test-model',
+            effort: 'high',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
 
         $this->assertSame('folder-done', $session['session_id']);
         $this->assertSame('running', $session['status']);
@@ -144,7 +208,13 @@ final class Test extends \PHPUnit\Framework\TestCase
         // the repo has no agent binaries in node_modules — the detached runner
         // must surface the spawn failure as a terminal error state
         $code = codemcp::create($this->config());
-        $session = $code->start(prompt: 'fresh task', workdir: $this->directory, provider: 'codex');
+        $session = $code->start(
+            prompt: 'fresh task',
+            model: 'test-model',
+            effort: 'high',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
         $this->assertSame('start', $session['mode']);
         $this->assertSame('running', $session['status']);
         $session = $this->waitUntilFinished($code, $session['session_id']);

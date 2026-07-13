@@ -17,14 +17,9 @@ composer require vielhuber/codemcp
 
 ## setup
 
-`.env` in the project root:
+`.env` in the project root (only for mcps via `http`):
 
 ```dotenv
-CODEMCP_PROVIDER=codex          # default agent: codex | claude
-CODEMCP_MODEL=                  # optional default model
-CODEMCP_EFFORT=                 # optional default effort
-CODEMCP_TIMEOUT=1800            # max seconds per agent run
-
 MCP_TOKEN=
 ```
 
@@ -65,7 +60,7 @@ $session = $code->stop(
 $providers = $code->providers();
 ```
 
-When `workdir` is omitted, each new session gets a random isolated directory under `sys_get_temp_dir()/codemcp/`. Pass an explicit directory only when the agent should work in an existing project.
+When `workdir` is omitted, each new session gets a random isolated directory under `sys_get_temp_dir()/codemcp/`. An explicit directory is created recursively when it does not exist, so new projects start in their final workspace and retain folder continuity. `model` and `effort` are required for every new session. Supported effort values are `minimal`, `low`, `medium`, `high` and `xhigh`.
 
 ## tests
 

@@ -25,9 +25,16 @@ foreach (
 use vielhuber\codemcp\codemcp;
 
 $session_id = $argv[1] ?? '';
-if ($session_id === '') {
-    fwrite(STDERR, 'codemcp-runner: missing session id' . PHP_EOL);
+$provider = $argv[2] ?? '';
+$timeout = (int) ($argv[3] ?? 0);
+$session_dir = $argv[4] ?? '';
+if ($session_id === '' || $provider === '' || $timeout < 1 || $session_dir === '') {
+    fwrite(STDERR, 'codemcp-runner: missing runner configuration' . PHP_EOL);
     exit(1);
 }
 
-codemcp::create()->executeJob($session_id);
+codemcp::create([
+    'provider' => $provider,
+    'timeout' => $timeout,
+    'session_dir' => $session_dir
+])->executeJob($session_id);
