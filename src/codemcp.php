@@ -984,9 +984,28 @@ final class codemcp
                         fclose($pipe);
                     }
                 }
-                $exit_code = proc_close($process);
+                $exit_code = (int) ($status['exitcode'] ?? -1);
+                $closed_exit_code = proc_close($process);
+                if ($exit_code === -1) {
+                    $exit_code = $closed_exit_code;
+                }
                 if ($exit_code !== 0) {
-                    throw new RuntimeException('codemcp: command failed: ' . trim($stderr));
+                    $details = trim($stderr);
+                    if ($details === '') {
+                        $payload = json_decode(trim($stdout), true);
+                        if (is_array($payload)) {
+                            $details = trim((string) ($payload['error'] ?? $payload['message'] ?? $payload['result'] ?? ''));
+                        }
+                    }
+                    if ($details === '') {
+                        $details = trim($stdout);
+                    }
+                    if ($details === '') {
+                        $details = 'no diagnostic output';
+                    }
+                    throw new RuntimeException(
+                        'codemcp: command failed (exit code ' . $exit_code . '): ' . substr($details, 0, 4000)
+                    );
                 }
                 return $this->normalizeCliResult($stdout);
             }

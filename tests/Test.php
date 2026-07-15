@@ -159,6 +159,19 @@ final class Test extends \PHPUnit\Framework\TestCase
         ], 'codex');
     }
 
+    public function test__command_error_uses_stdout_when_stderr_is_empty(): void
+    {
+        $method = new ReflectionMethod(codemcp::class, 'runCommand');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('command failed (exit code 7): usage limit reached');
+        $method->invoke(
+            codemcp::create($this->config()),
+            [PHP_BINARY, '-r', 'echo json_encode(["result" => "usage limit reached"]); exit(7);'],
+            $this->directory
+        );
+    }
+
     public function test__continue_on_running_session_enqueues(): void
     {
         $this->writeSession('running-1', [
