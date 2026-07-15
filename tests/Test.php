@@ -141,6 +141,24 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->assertFalse($parameters['effort']->isOptional());
     }
 
+    public function test__codex_error_payload_is_rejected(): void
+    {
+        $method = new ReflectionMethod(codemcp::class, 'normalizeMcpResult');
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessage('model is not supported');
+        $method->invoke(codemcp::create($this->config()), [
+            'content' => [[
+                'type' => 'text',
+                'text' => json_encode([
+                    'type' => 'error',
+                    'status' => 400,
+                    'error' => ['message' => 'model is not supported']
+                ])
+            ]]
+        ], 'codex');
+    }
+
     public function test__continue_on_running_session_enqueues(): void
     {
         $this->writeSession('running-1', [

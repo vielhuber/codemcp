@@ -1010,20 +1010,30 @@ final class codemcp
     private function normalizeMcpResult(array $result, string $tool): array
     {
         $structured = $result['structuredContent'] ?? null;
-        if (is_array($structured)) {
-            return [
-                'provider' => 'codex',
-                'tool' => $tool,
-                'thread_id' => $structured['threadId'] ?? $structured['conversationId'] ?? null,
-                'content' => $structured['content'] ?? null,
-                'raw' => $result
-            ];
+        $content = is_array($structured)
+            ? ($structured['content'] ?? null)
+            : $this->textContent($result['content'] ?? null);
+        $decodedContent = is_string($content) ? json_decode(trim($content), true) : null;
+        $errorPayload = is_array($structured) ? $structured : $decodedContent;
+        if (
+            ($result['isError'] ?? false) === true ||
+            (is_array($errorPayload) && ($errorPayload['type'] ?? null) === 'error') ||
+            (is_array($errorPayload) && (int) ($errorPayload['status'] ?? 0) >= 400)
+        ) {
+            $error = is_array($errorPayload) ? ($errorPayload['error'] ?? null) : null;
+            $message = is_array($error) ? ($error['message'] ?? null) : $error;
+            if (!is_string($message) || trim($message) === '') {
+                $message = is_string($content) && trim($content) !== '' ? $content : 'Codex tool execution failed.';
+            }
+            throw new RuntimeException('codemcp: ' . $message);
         }
         return [
             'provider' => 'codex',
             'tool' => $tool,
-            'thread_id' => $result['threadId'] ?? $result['conversationId'] ?? null,
-            'content' => $this->textContent($result['content'] ?? null),
+            'thread_id' => is_array($structured)
+                ? ($structured['threadId'] ?? $structured['conversationId'] ?? null)
+                : ($result['threadId'] ?? $result['conversationId'] ?? null),
+            'content' => $content,
             'raw' => $result
         ];
     }
