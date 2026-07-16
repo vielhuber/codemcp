@@ -62,6 +62,8 @@ $providers = $code->providers();
 
 When `workdir` is omitted, each new session gets a random isolated directory under `sys_get_temp_dir()/codemcp/`. An explicit directory is created recursively when it does not exist, so new projects start in their final workspace and retain folder continuity. `model` and `effort` are required for every new session. Supported effort values are `minimal`, `low`, `medium`, `high` and `xhigh`.
 
+Long-running agents are limited by inactivity, not total runtime. MCP progress events and command output reset the internal inactivity timeout, so an active run can continue beyond 30 minutes while a stalled run is still terminated.
+
 ## tests
 
 ```bash

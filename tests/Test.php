@@ -172,6 +172,59 @@ final class Test extends \PHPUnit\Framework\TestCase
         );
     }
 
+    public function test__command_activity_resets_inactivity_timeout(): void
+    {
+        $method = new ReflectionMethod(codemcp::class, 'runCommand');
+        $result = $method->invoke(
+            codemcp::create($this->config()),
+            [
+                PHP_BINARY,
+                '-r',
+                'for ($i = 0; $i < 4; $i++) { echo "\\n"; flush(); usleep(400000); } echo json_encode(["result" => "done"]);'
+            ],
+            $this->directory
+        );
+
+        $this->assertSame('done', $result['content']);
+    }
+
+    public function test__mcp_progress_resets_inactivity_timeout(): void
+    {
+        $process = proc_open(
+            [
+                PHP_BINARY,
+                '-r',
+                'for ($i = 0; $i < 4; $i++) { echo json_encode(["jsonrpc" => "2.0", "method" => "progress"]) . "\\n"; flush(); usleep(400000); } echo json_encode(["jsonrpc" => "2.0", "id" => 1, "result" => ["content" => "done"]]) . "\\n";'
+            ],
+            [
+                0 => ['pipe', 'r'],
+                1 => ['pipe', 'w'],
+                2 => ['pipe', 'w']
+            ],
+            $pipes,
+            $this->directory
+        );
+        $this->assertIsResource($process);
+        stream_set_blocking($pipes[1], false);
+        stream_set_blocking($pipes[2], false);
+        $client = [
+            'process' => $process,
+            'pipes' => $pipes,
+            'buffer' => '',
+            'stderr' => '',
+            'event_log' => null
+        ];
+        $method = new ReflectionMethod(codemcp::class, 'mcpRead');
+        $arguments = [&$client, 1];
+        $result = $method->invokeArgs(codemcp::create($this->config()), $arguments);
+        foreach ($pipes as $pipe) {
+            fclose($pipe);
+        }
+        proc_close($process);
+
+        $this->assertSame('done', $result['result']['content']);
+    }
+
     public function test__continue_on_running_session_enqueues(): void
     {
         $this->writeSession('running-1', [

@@ -9,7 +9,7 @@ use vielhuber\simplemcp\Attributes\McpTool;
 final class codemcp
 {
     private const DEFAULT_PROVIDER = 'codex';
-    private const DEFAULT_TIMEOUT = 1800;
+    private const DEFAULT_INACTIVITY_TIMEOUT = 1800;
     private array $config;
 
     public function __construct(?array $config = null)
@@ -117,7 +117,7 @@ final class codemcp
     }
 
     /**
-     * Show the active configuration (default provider and timeout) and stored
+     * Show the active configuration (default provider and inactivity timeout) and stored
      * sessions. Without `session_id`, lists all known
      * sessions newest first; with `session_id`, returns just that session
      * including `status` ("running" | "completed" | "error" | "stopped"),
@@ -880,16 +880,22 @@ final class codemcp
 
     private function mcpRead(array &$client, int $id): array
     {
-        $started = time();
-        while ((time() - $started) <= $this->config['timeout']) {
+        $last_activity = microtime(true);
+        while ((microtime(true) - $last_activity) <= $this->config['timeout']) {
             $status = proc_get_status($client['process']);
             if (($status['running'] ?? false) === false) {
-                $stderr = stream_get_contents($client['pipes'][2]);
+                $stderr = ($client['stderr'] ?? '') . stream_get_contents($client['pipes'][2]);
                 throw new RuntimeException('codemcp: MCP server exited before response: ' . trim((string) $stderr));
             }
             $chunk = stream_get_contents($client['pipes'][1]);
-            if ($chunk !== false) {
+            $stderr_chunk = stream_get_contents($client['pipes'][2]);
+            if ($chunk !== false && $chunk !== '') {
                 $client['buffer'] .= $chunk;
+                $last_activity = microtime(true);
+            }
+            if ($stderr_chunk !== false && $stderr_chunk !== '') {
+                $client['stderr'] = ($client['stderr'] ?? '') . $stderr_chunk;
+                $last_activity = microtime(true);
             }
             while (str_contains($client['buffer'], "\n")) {
                 [$line, $client['buffer']] = explode("\n", $client['buffer'], 2);
@@ -915,7 +921,9 @@ final class codemcp
             }
             usleep(10000);
         }
-        throw new RuntimeException('codemcp: MCP request timed out after ' . $this->config['timeout'] . ' seconds.');
+        throw new RuntimeException(
+            'codemcp: MCP request produced no activity for ' . $this->config['timeout'] . ' seconds.'
+        );
     }
 
     private function closeStdioMcp(array $client): void
@@ -954,12 +962,16 @@ final class codemcp
         $stdout = '';
         $stderr = '';
         $event_buffer = '';
-        $started = time();
+        $last_activity = microtime(true);
 
-        while ((time() - $started) <= $this->config['timeout']) {
+        while ((microtime(true) - $last_activity) <= $this->config['timeout']) {
             $stdout_chunk = (string) stream_get_contents($pipes[1]);
+            $stderr_chunk = (string) stream_get_contents($pipes[2]);
             $stdout .= $stdout_chunk;
-            $stderr .= (string) stream_get_contents($pipes[2]);
+            $stderr .= $stderr_chunk;
+            if ($stdout_chunk !== '' || $stderr_chunk !== '') {
+                $last_activity = microtime(true);
+            }
             if ($event_log !== null && $stdout_chunk !== '') {
                 $event_buffer .= $stdout_chunk;
                 while (($newline_position = strpos($event_buffer, "\n")) !== false) {
@@ -1014,7 +1026,7 @@ final class codemcp
 
         proc_terminate($process);
         proc_close($process);
-        throw new RuntimeException('codemcp: command timed out after ' . $this->config['timeout'] . ' seconds.');
+        throw new RuntimeException('codemcp: command produced no activity for ' . $this->config['timeout'] . ' seconds.');
     }
 
     private function runInteractiveCommand(array $command, ?string $workdir, array $extra_env = [], ?string $event_log = null): array
@@ -1148,7 +1160,7 @@ final class codemcp
     {
         return [
             'provider' => self::DEFAULT_PROVIDER,
-            'timeout' => self::DEFAULT_TIMEOUT,
+            'timeout' => self::DEFAULT_INACTIVITY_TIMEOUT,
             'session_dir' => $this->absolutePath('.codemcp/sessions')
         ];
     }
