@@ -6,15 +6,24 @@ use vielhuber\codemcp\codemcp;
 final class Test extends \PHPUnit\Framework\TestCase
 {
     private string $directory;
+    private string|false $originalCodexHome;
 
     protected function setUp(): void
     {
         $this->directory = sys_get_temp_dir() . '/codemcp_' . uniqid();
         mkdir($this->directory, 0775, true);
+        $this->originalCodexHome = getenv('CODEX_HOME');
+        putenv('CODEX_HOME=' . $this->directory . '/.codex');
     }
 
     protected function tearDown(): void
     {
+        if ($this->originalCodexHome === false) {
+            putenv('CODEX_HOME');
+        }
+        if ($this->originalCodexHome !== false) {
+            putenv('CODEX_HOME=' . $this->originalCodexHome);
+        }
         $this->removeDirectory($this->directory);
     }
 
@@ -253,6 +262,11 @@ final class Test extends \PHPUnit\Framework\TestCase
             'thread_id' => 'thread-old',
             'started_at' => date(DATE_ATOM)
         ]);
+        $this->writeCodexRollout(
+            '33333333-3333-4333-8333-333333333333',
+            '2026-07-17T13-00-00',
+            time()
+        );
         $session = codemcp::create($this->config())->start(
             prompt: 'more work',
             model: 'test-model',
@@ -285,6 +299,41 @@ final class Test extends \PHPUnit\Framework\TestCase
         $this->assertSame('folder-done', $session['session_id']);
         $this->assertSame('running', $session['status']);
         $this->assertSame(['again'], $session['queue']);
+    }
+
+    public function test__newest_native_folder_session_wins_over_stale_mcp_metadata(): void
+    {
+        $this->writeSession('stale-mcp', [
+            'status' => 'completed',
+            'provider' => 'codex',
+            'workdir' => $this->directory,
+            'thread_id' => '11111111-1111-4111-8111-111111111111',
+            'updated_at' => '2099-01-01T00:00:00+00:00'
+        ]);
+        $threadId = '22222222-2222-4222-8222-222222222222';
+        $this->writeCodexRollout(
+            '33333333-3333-4333-8333-333333333333',
+            '2026-07-17T13-00-00',
+            time() - 60
+        );
+        $this->writeCodexRollout(
+            $threadId,
+            '2026-01-01T12-00-00',
+            time()
+        );
+
+        $session = codemcp::create($this->config())->start(
+            prompt: 'continue latest',
+            model: 'test-model',
+            effort: 'high',
+            workdir: $this->directory,
+            provider: 'codex'
+        );
+
+        $this->assertNotSame('stale-mcp', $session['session_id']);
+        $this->assertSame($threadId, $session['thread_id']);
+        $this->assertSame('continue_last', $session['mode']);
+        $this->waitUntilFinished(codemcp::create($this->config()), $session['session_id']);
     }
 
     public function test__start_in_fresh_folder_starts_new_thread_and_runner_reports_errors(): void
@@ -360,6 +409,20 @@ final class Test extends \PHPUnit\Framework\TestCase
         $data['id'] = $id;
         $data['updated_at'] = $data['updated_at'] ?? date(DATE_ATOM);
         file_put_contents($dir . '/' . $id . '.json', json_encode($data, JSON_PRETTY_PRINT));
+    }
+
+    private function writeCodexRollout(string $threadId, string $timestamp, int $modifiedAt): void
+    {
+        $directory = $this->directory . '/.codex/sessions/2026/07/17';
+        if (!is_dir($directory)) {
+            mkdir($directory, 0775, true);
+        }
+        $file = $directory . '/rollout-' . $timestamp . '-' . $threadId . '.jsonl';
+        file_put_contents(
+            $file,
+            json_encode(['payload' => ['cwd' => $this->directory]], JSON_UNESCAPED_SLASHES) . "\n"
+        );
+        touch($file, $modifiedAt);
     }
 
     private function waitUntilFinished(codemcp $code, string $sessionId): array

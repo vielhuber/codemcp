@@ -214,13 +214,14 @@ final class codemcp
 
     /**
      * Folder continuity used by start(): resolve the newest thread of the
-     * workdir — own sessions first, then the agent's native folder history —
-     * and continue it. Returns null when the folder has no history at all.
+     * workdir and continue it. A running MCP session wins to prevent parallel
+     * work; otherwise the most recently active native thread wins over stale
+     * MCP metadata. Returns null when the folder has no history at all.
      */
     private function continueFolderIfHistory(string $workdir, string $provider_name, string $prompt, ?string $model, ?string $effort): ?array
     {
-        foreach ($this->sessionStatus()['sessions'] as $candidate) {
-            // list is sorted newest first
+        $sessions = $this->sessionStatus()['sessions'];
+        foreach ($sessions as $candidate) {
             if (($candidate['workdir'] ?? '') !== $workdir) {
                 continue;
             }
@@ -230,14 +231,32 @@ final class codemcp
             if ((string) ($candidate['thread_id'] ?? '') === '') {
                 continue;
             }
+            if (($candidate['status'] ?? '') !== 'running') {
+                continue;
+            }
             return $this->continueSession((string) $candidate['id'], $prompt, $model, $effort);
         }
-        $has_native_history = match ($provider_name) {
-            'codex' => $this->findLatestCodexThreadFor($workdir) !== null,
-            'claude' => $this->claudeHasHistory($workdir),
-            default => false
+        $native_thread_id = match ($provider_name) {
+            'codex' => $this->findLatestCodexThreadFor($workdir),
+            'claude' => $this->findLatestClaudeThreadFor($workdir),
+            default => null
         };
-        if (!$has_native_history) {
+        foreach ($sessions as $candidate) {
+            if (($candidate['workdir'] ?? '') !== $workdir) {
+                continue;
+            }
+            if (($candidate['provider'] ?? '') !== $provider_name) {
+                continue;
+            }
+            if ((string) ($candidate['thread_id'] ?? '') === '') {
+                continue;
+            }
+            if ($native_thread_id !== null && (string) $candidate['thread_id'] !== $native_thread_id) {
+                continue;
+            }
+            return $this->continueSession((string) $candidate['id'], $prompt, $model, $effort);
+        }
+        if ($native_thread_id === null) {
             return null;
         }
         $session = $this->saveSession([
@@ -249,7 +268,7 @@ final class codemcp
             'prompt' => $prompt,
             'queue' => [$prompt],
             'status' => 'running',
-            'thread_id' => null,
+            'thread_id' => $native_thread_id,
             'last_content' => null,
             'error' => null,
             'pid' => null,
@@ -498,6 +517,7 @@ final class codemcp
             $thread_id !== '' && $provider_name === 'codex' => $this->continueCodex(
                 thread_id: $thread_id,
                 prompt: $prompt,
+                workdir: $workdir,
                 event_log: $event_log
             ),
             $thread_id !== '' && $provider_name === 'claude' => $this->continueClaude(
@@ -510,6 +530,7 @@ final class codemcp
             $mode === 'continue_last' && $provider_name === 'codex' => $this->continueCodex(
                 thread_id: $this->latestCodexThreadFor($workdir),
                 prompt: $prompt,
+                workdir: $workdir,
                 event_log: $event_log
             ),
             $mode === 'continue_last' && $provider_name === 'claude' => $this->continueLastClaude(
@@ -644,7 +665,7 @@ final class codemcp
         return $this->callCodexTool('codex', $arguments, $workdir, $event_log);
     }
 
-    private function continueCodex(string $thread_id, string $prompt, ?string $event_log = null): array
+    private function continueCodex(string $thread_id, string $prompt, string $workdir, ?string $event_log = null): array
     {
         // codex mcp-server can only continue threads held in the SAME server
         // process — a fresh process answers "Session not found". `codex exec
@@ -668,7 +689,7 @@ final class codemcp
                     $output_file,
                     $prompt
                 ],
-                null,
+                $workdir,
                 [],
                 $event_log
             );
@@ -721,15 +742,19 @@ final class codemcp
 
     /**
      * Folder-based codex resume: find the newest rollout whose recorded cwd
-     * matches the workdir — the same lookup `codex resume --last` performs on
-     * the console. Rollout filenames embed a sortable timestamp, so a reverse
-     * path sort yields newest-first.
+     * matches the workdir. Modification time matters because resuming an older
+     * thread makes that thread the most recently active one without renaming
+     * its rollout file.
      */
     private function findLatestCodexThreadFor(string $workdir): ?string
     {
         $home = getenv('CODEX_HOME') ?: ((getenv('HOME') ?: '/root') . '/.codex');
         $files = glob($home . '/sessions/*/*/*/rollout-*.jsonl') ?: [];
-        rsort($files);
+        usort($files, function (string $first, string $second): int {
+            $first_modified = filemtime($first) ?: 0;
+            $second_modified = filemtime($second) ?: 0;
+            return $second_modified <=> $first_modified ?: strcmp($second, $first);
+        });
         $needle = '"cwd":' . json_encode(rtrim($workdir, '/'), JSON_UNESCAPED_SLASHES);
         foreach ($files as $file) {
             $head = (string) file_get_contents($file, false, null, 0, 8192);
@@ -752,13 +777,20 @@ final class codemcp
         return $thread_id;
     }
 
-    private function claudeHasHistory(string $workdir): bool
+    private function findLatestClaudeThreadFor(string $workdir): ?string
     {
-        // claude keys its transcript store by a slug of the working directory
         $home = getenv('CLAUDE_CONFIG_DIR') ?: ((getenv('HOME') ?: '/root') . '/.claude');
         $slug = preg_replace('/[^a-zA-Z0-9]/', '-', rtrim($workdir, '/')) ?? '';
-        $files = glob($home . '/projects/' . $slug . '/*.jsonl');
-        return is_array($files) && $files !== [];
+        $files = glob($home . '/projects/' . $slug . '/*.jsonl') ?: [];
+        usort($files, function (string $first, string $second): int {
+            $first_modified = filemtime($first) ?: 0;
+            $second_modified = filemtime($second) ?: 0;
+            return $second_modified <=> $first_modified ?: strcmp($second, $first);
+        });
+        if ($files === []) {
+            return null;
+        }
+        return pathinfo($files[0], PATHINFO_FILENAME);
     }
 
     private function continueLastClaude(string $prompt, string $workdir, ?string $model = null, ?string $effort = null): array
