@@ -62,6 +62,8 @@ $providers = $code->providers();
 
 When `workdir` is omitted, each new session gets a random isolated directory under `sys_get_temp_dir()/codemcp/`. An explicit directory is created recursively when it does not exist, so new projects start in their final workspace and retain folder continuity. A running session for that folder is reused; otherwise Codemcp resumes the most recently active native Codex or Claude session and creates a new thread only when no folder history exists. `model` and `effort` are required for every new session. Supported effort values are `minimal`, `low`, `medium`, `high` and `xhigh`.
 
+When `start` or `continue` submits a prompt to an existing session, the immediate response has status `queued`. `queued_prompt` and `queue_position` describe the new submission, while `previous_prompt` and `previous_result` expose the prior context without presenting it as the new result. `session_status` contains the underlying runtime state. Subsequent `wait` and `status` calls return the regular session status (`running`, `completed`, `error` or `stopped`) and the new final answer in `last_content`.
+
 Long-running agents are limited by inactivity, not total runtime. MCP progress events and command output reset the internal inactivity timeout, so an active run can continue beyond 30 minutes while a stalled run is still terminated.
 
 ## tests

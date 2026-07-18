@@ -37,9 +37,12 @@ final class codemcp
      * commands and tests, and works the task end-to-end inside the working
      * directory.
      *
-     * This call returns IMMEDIATELY with `session_id` and status "running" —
-     * it does NOT wait for the agent. Poll with `wait` (preferred) or `status`
-     * until the status leaves "running"; the agent's final answer is then in
+     * This call returns IMMEDIATELY with `session_id`. A fresh session returns
+     * status "running". When folder continuity queues the prompt in an existing
+     * session, it returns status "queued", `queued_prompt`, `queue_position`,
+     * `previous_prompt` and `previous_result`; `session_status` contains the
+     * underlying session state. Poll with `wait` (preferred) or `status` until
+     * the session status leaves "running"; the agent's final answer is then in
      * `last_content`. Long runs (10+ minutes) are normal and NOT an error.
      *
      * The agent has write access inside the working directory. For pure
@@ -81,11 +84,13 @@ final class codemcp
      * like typing further messages into an interactive claude/codex session.
      * `wait` returns once the whole queue is drained.
      *
-     * Returns immediately — poll with `wait`/`status` for the result. Use
+     * Returns immediately with status "queued", `queued_prompt`,
+     * `queue_position`, `previous_prompt`, `previous_result` and the underlying
+     * `session_status` — poll with `wait`/`status` for the new result. Use
      * continue ONLY for follow-ups that belong to the same task; start a fresh
-     * session (other folder) for unrelated tasks. To continue the newest
-     * thread of a FOLDER, simply call `start` — it auto-continues folders
-     * that already have history.
+     * session (other folder) for unrelated tasks. To continue the newest thread
+     * of a FOLDER, simply call `start` — it auto-continues folders that already
+     * have history.
      *
      * @param string $session_id The `session_id` returned by a previous `start` call (also listed by `status`).
      * @param string $prompt Follow-up instruction for the same task. May reference prior context ("now also fix the failing test you mentioned").
@@ -282,11 +287,26 @@ final class codemcp
     private function continueSession(string $session_id, string $prompt, ?string $model = null, ?string $effort = null): array
     {
         $spawn = false;
-        $session = $this->withSessionLock($session_id, function () use ($session_id, $prompt, $model, $effort, &$spawn) {
+        $previous_prompt = null;
+        $previous_result = null;
+        $queue_position = 0;
+        $session = $this->withSessionLock($session_id, function () use (
+            $session_id,
+            $prompt,
+            $model,
+            $effort,
+            &$spawn,
+            &$previous_prompt,
+            &$previous_result,
+            &$queue_position
+        ) {
             $session = $this->getSession($session_id);
+            $previous_prompt = $session['prompt'] ?? null;
+            $previous_result = $session['last_content'] ?? null;
             $queue = is_array($session['queue'] ?? null) ? $session['queue'] : [];
             $queue[] = $prompt;
             $session['queue'] = $queue;
+            $queue_position = count($queue);
             if ($model !== null) {
                 $session['model'] = $model;
             }
@@ -313,14 +333,22 @@ final class codemcp
         if ($spawn) {
             $session = $this->spawnRunner($session);
         }
-        return $this->publicSession(
+        $response = $this->publicSession(
             $session,
-            $spawn
-                ? null
-                : 'prompt queued (position ' .
-                    count($session['queue'] ?? []) .
-                    ') — the running agent processes queued prompts strictly in order; poll with wait(session_id).'
+            'prompt queued (position ' .
+                $queue_position .
+                ') — the agent processes queued prompts strictly in order; poll with wait(session_id).'
         );
+        return array_merge($response, [
+            'status' => 'queued',
+            'session_status' => $session['status'] ?? 'running',
+            'prompt' => $prompt,
+            'queued_prompt' => $prompt,
+            'queue_position' => $queue_position,
+            'previous_prompt' => $previous_prompt,
+            'previous_result' => $previous_result,
+            'last_content' => null
+        ]);
     }
 
     /**

@@ -244,11 +244,15 @@ final class Test extends \PHPUnit\Framework\TestCase
         ]);
         $code = codemcp::create($this->config());
         $session = $code->continue(session_id: 'running-1', prompt: 'first follow-up');
-        $this->assertSame('running', $session['status']);
+        $this->assertSame('queued', $session['status']);
+        $this->assertSame('running', $session['session_status']);
+        $this->assertSame('first follow-up', $session['queued_prompt']);
+        $this->assertSame(1, $session['queue_position']);
         $this->assertSame(['first follow-up'], $session['queue']);
 
         $session = $code->continue(session_id: 'running-1', prompt: 'second follow-up');
         $this->assertSame(['first follow-up', 'second follow-up'], $session['queue']);
+        $this->assertSame(2, $session['queue_position']);
         $this->assertStringContainsString('queued (position 2)', (string) $session['hint']);
     }
 
@@ -260,6 +264,8 @@ final class Test extends \PHPUnit\Framework\TestCase
             'provider' => 'codex',
             'workdir' => $this->directory,
             'thread_id' => 'thread-old',
+            'prompt' => 'current work',
+            'last_content' => 'previous answer',
             'started_at' => date(DATE_ATOM)
         ]);
         $this->writeCodexRollout(
@@ -276,7 +282,13 @@ final class Test extends \PHPUnit\Framework\TestCase
         );
 
         $this->assertSame('older', $session['session_id']);
-        $this->assertSame('running', $session['status']);
+        $this->assertSame('queued', $session['status']);
+        $this->assertSame('running', $session['session_status']);
+        $this->assertSame('more work', $session['prompt']);
+        $this->assertSame('more work', $session['queued_prompt']);
+        $this->assertSame('current work', $session['previous_prompt']);
+        $this->assertSame('previous answer', $session['previous_result']);
+        $this->assertNull($session['last_content']);
         $this->assertSame(['more work'], $session['queue']);
     }
 
@@ -286,7 +298,9 @@ final class Test extends \PHPUnit\Framework\TestCase
             'status' => 'completed',
             'provider' => 'codex',
             'workdir' => $this->directory,
-            'thread_id' => 'thread-1'
+            'thread_id' => 'thread-1',
+            'prompt' => 'previous work',
+            'last_content' => 'previous result'
         ]);
         $session = codemcp::create($this->config())->start(
             prompt: 'again',
@@ -297,7 +311,11 @@ final class Test extends \PHPUnit\Framework\TestCase
         );
 
         $this->assertSame('folder-done', $session['session_id']);
-        $this->assertSame('running', $session['status']);
+        $this->assertSame('queued', $session['status']);
+        $this->assertSame('running', $session['session_status']);
+        $this->assertSame('again', $session['queued_prompt']);
+        $this->assertSame('previous work', $session['previous_prompt']);
+        $this->assertSame('previous result', $session['previous_result']);
         $this->assertSame(['again'], $session['queue']);
     }
 
