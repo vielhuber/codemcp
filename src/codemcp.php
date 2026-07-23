@@ -50,18 +50,18 @@ final class codemcp
      * prompt.
      *
      * @param string $prompt Complete, self-contained task description. The agent knows NOTHING about this conversation — include the concrete goal, target paths/files, constraints (e.g. "analysis only, do not change files"), and the command(s) to verify success (e.g. "run vendor/bin/phpunit and make it pass").
-     * @param string $model Provider-native model name. Required for every new session; claude examples: "claude-opus-4-8" or "sonnet".
-     * @param string $effort Reasoning effort: "minimal", "low", "medium", "high" or "xhigh". Maps to the reasoning-effort config on codex and to the native --effort level on claude. Higher = more thorough but slower.
      * @param string|null $workdir Absolute path the agent works in — also the key for automatic folder continuity. Created when missing. Omit to create a new isolated directory under the system temp directory.
      * @param string|null $provider Coding agent: "codex" (Codex CLI) or "claude" (Claude Code). Omit to use the configured default.
+     * @param string|null $model Provider-native model name. Omit to use the agent's own default.
+     * @param string|null $effort Reasoning effort: "minimal", "low", "medium", "high" or "xhigh". Omit to use the agent's own default.
      */
     #[McpTool(name: 'start')]
     public function startTool(
         string $prompt,
-        string $model,
-        string $effort,
         ?string $workdir = null,
-        ?string $provider = null
+        ?string $provider = null,
+        ?string $model = null,
+        ?string $effort = null
     ): array
     {
         return $this->start(
@@ -166,10 +166,10 @@ final class codemcp
 
     public function start(
         string $prompt,
-        string $model,
-        string $effort,
         ?string $workdir = null,
-        ?string $provider = null
+        ?string $provider = null,
+        ?string $model = null,
+        ?string $effort = null
     ): array
     {
         $prompt = trim($prompt);
@@ -1177,20 +1177,17 @@ final class codemcp
         return $provider;
     }
 
-    private function normalizeModel(string $model): string
+    private function normalizeModel(?string $model): ?string
     {
-        $model = trim($model);
-        if ($model === '') {
-            throw new RuntimeException('codemcp: model must not be empty.');
-        }
-        return $model;
+        $model = trim((string) ($model ?? ''));
+        return $model !== '' ? $model : null;
     }
 
-    private function normalizeEffort(string $effort): string
+    private function normalizeEffort(?string $effort): ?string
     {
-        $effort = strtolower(trim($effort));
+        $effort = strtolower(trim((string) ($effort ?? '')));
         if ($effort === '') {
-            throw new RuntimeException('codemcp: effort must not be empty.');
+            return null;
         }
         if (!in_array($effort, ['minimal', 'low', 'medium', 'high', 'xhigh'], true)) {
             throw new RuntimeException('codemcp: unsupported effort (use minimal|low|medium|high|xhigh): ' . $effort);

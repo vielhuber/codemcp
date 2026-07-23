@@ -115,39 +115,17 @@ final class Test extends \PHPUnit\Framework\TestCase
         );
     }
 
-    public function test__empty_model_is_rejected(): void
-    {
-        $this->expectException(RuntimeException::class);
-        codemcp::create($this->config())->start(
-            prompt: 'review',
-            model: '',
-            effort: 'high',
-            workdir: $this->directory,
-            provider: 'codex'
-        );
-    }
-
-    public function test__empty_effort_is_rejected(): void
-    {
-        $this->expectException(RuntimeException::class);
-        codemcp::create($this->config())->start(
-            prompt: 'review',
-            model: 'test-model',
-            effort: '',
-            workdir: $this->directory,
-            provider: 'codex'
-        );
-    }
-
-    public function test__model_and_effort_are_required_tool_arguments(): void
+    public function test__model_and_effort_are_optional_tool_arguments(): void
     {
         $parameters = [];
         foreach ((new ReflectionMethod(codemcp::class, 'startTool'))->getParameters() as $parameter) {
             $parameters[$parameter->getName()] = $parameter;
         }
 
-        $this->assertFalse($parameters['model']->isOptional());
-        $this->assertFalse($parameters['effort']->isOptional());
+        $this->assertTrue($parameters['model']->isOptional());
+        $this->assertNull($parameters['model']->getDefaultValue());
+        $this->assertTrue($parameters['effort']->isOptional());
+        $this->assertNull($parameters['effort']->getDefaultValue());
     }
 
     public function test__codex_error_payload_is_rejected(): void
